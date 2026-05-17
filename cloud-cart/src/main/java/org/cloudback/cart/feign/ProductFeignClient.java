@@ -1,0 +1,12 @@
+package org.cloudback.cart.feign;
+
+import org.cloudback.cart.dto.CartItem;
+import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+
+@FeignClient(name = "cloud-product")
+public interface ProductFeignClient {
+    @GetMapping("/product/detail/{id}")
+    org.cloudback.common.result.R<CartItem> getProductDetail(@PathVariable Long id);
+}
