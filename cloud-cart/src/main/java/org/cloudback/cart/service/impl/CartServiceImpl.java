@@ -20,21 +20,32 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
+/**
+ * 购物车服务实现，所有数据存储在 Redis Hash 中。
+ * Key: cloud:cart:{userId}  Field: productId  Value: CartItem JSON
+ * 新增商品时通过 Feign 查询商品服务获取名称、价格等信息。
+ * 购物车有效期 7 天，每次操作续期。
+ *
+ * @author CloudBack
+ * @since 2025-05-17
+ */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class CartServiceImpl implements CartService {
+
     private final RedisTemplate<String, Object> redisTemplate;
     private final ProductFeignClient productFeignClient;
     private static final long CART_TTL_DAYS = 7;
 
+    /** 生成购物车 Redis Key */
     private String cartKey(Long userId) {
         return SystemConstants.CART_KEY_PREFIX + userId;
     }
 
+    /** 添加商品到购物车，已存在则累加数量，通过 Feign 查询商品信息 */
     @Override
     public R<String> addItem(Long userId, Long productId, Integer quantity) {
-        // 查询商品信息（调用product服务）
         R<CartItem> result = productFeignClient.getProductDetail(productId);
         if (result.getCode() != 200 || result.getData() == null) {
             throw new BusinessException(ResultCode.PRODUCT_NOT_EXIST);
@@ -43,23 +54,20 @@ public class CartServiceImpl implements CartService {
         String key = cartKey(userId);
         String field = String.valueOf(productId);
 
-        // 检查购物车是否已存在该商品
         Object existing = redisTemplate.opsForHash().get(key, field);
         if (existing != null) {
-            // 已存在，累加数量
             CartItem cartItem = JSON.parseObject(existing.toString(), CartItem.class);
             cartItem.setQuantity(cartItem.getQuantity() + quantity);
             cartItem.setChecked(true);
             redisTemplate.opsForHash().put(key, field, JSON.toJSONString(cartItem));
         } else {
-            // 新商品，创建CartItem
             CartItem cartItem = new CartItem();
             cartItem.setProductId(productId);
             cartItem.setProductName(result.getData().getProductName());
             cartItem.setProductImage(result.getData().getProductImage());
             cartItem.setPrice(result.getData().getPrice());
             cartItem.setQuantity(quantity);
-            cartItem.setChecked(true); // 默认勾选
+            cartItem.setChecked(true);
             redisTemplate.opsForHash().put(key, field, JSON.toJSONString(cartItem));
         }
 
@@ -67,6 +75,7 @@ public class CartServiceImpl implements CartService {
         return R.ok("添加购物车成功");
     }
 
+    /** 更新商品数量 */
     @Override
     public R<String> updateQuantity(Long userId, Long productId, Integer quantity) {
         String key = cartKey(userId);
@@ -84,12 +93,14 @@ public class CartServiceImpl implements CartService {
         return R.ok("更新数量成功");
     }
 
+    /** 移除商品（HDEL） */
     @Override
     public R<String> removeItem(Long userId, Long productId) {
         redisTemplate.opsForHash().delete(cartKey(userId), String.valueOf(productId));
         return R.ok("移除成功");
     }
 
+    /** 勾选/取消勾选商品 */
     @Override
     public R<String> checkItem(Long userId, Long productId, Boolean checked) {
         String key = cartKey(userId);
@@ -106,12 +117,14 @@ public class CartServiceImpl implements CartService {
         return R.ok(checked ? "已勾选" : "已取消勾选");
     }
 
+    /** 清空购物车（DEL 整个 Key） */
     @Override
     public R<String> clearCart(Long userId) {
         redisTemplate.delete(cartKey(userId));
         return R.ok("购物车已清空");
     }
 
+    /** 获取全部购物车商品（HGETALL），按 productId 排序 */
     @Override
     public R<List<CartItem>> getCartList(Long userId) {
         Map<Object, Object> entries = redisTemplate.opsForHash().entries(cartKey(userId));
@@ -127,6 +140,7 @@ public class CartServiceImpl implements CartService {
         return R.ok(items);
     }
 
+    /** 获取已勾选商品（下单时用），过滤 checked=true */
     @Override
     public R<List<CartItem>> getCheckedItems(Long userId) {
         Map<Object, Object> entries = redisTemplate.opsForHash().entries(cartKey(userId));

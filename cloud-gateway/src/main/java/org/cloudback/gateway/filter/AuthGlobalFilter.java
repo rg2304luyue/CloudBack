@@ -19,28 +19,36 @@ import reactor.core.publisher.Mono;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
+/**
+ * 全局 JWT 认证过滤器，拦截所有请求。
+ * 白名单 URL（login/register/health）直接放行，其余请求必须携带有效 JWT。
+ * 认证通过后将 userId 和 username 注入 X-User-Id / X-Username 请求头。
+ *
+ * @author CloudBack
+ * @since 2025-05-17
+ */
 @Slf4j
 @Component
 public class AuthGlobalFilter implements GlobalFilter, Ordered {
 
+    /** JWT 认证白名单 */
     private static final List<String> WHITE_URLS = List.of(
             "/auth/login",
             "/auth/register",
             "/auth/health"
     );
 
+    /** 过滤逻辑：白名单放行，其余校验 JWT 并注入用户信息 */
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
         String path = exchange.getRequest().getURI().getPath();
 
-        // 白名单放行
         for (String whiteUrl : WHITE_URLS) {
             if (path.contains(whiteUrl)) {
                 return chain.filter(exchange);
             }
         }
 
-        // 获取Token
         String token = exchange.getRequest().getHeaders().getFirst(SystemConstants.TOKEN_HEADER);
         if (token == null || !token.startsWith(SystemConstants.TOKEN_PREFIX)) {
             return unauthorized(exchange, "未登录或Token已过期");
@@ -54,7 +62,6 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
             return unauthorized(exchange, "Token已过期，请重新登录");
         }
 
-        // 将用户信息写入请求头，传递给下游服务
         ServerHttpRequest request = exchange.getRequest().mutate()
                 .header("X-User-Id", String.valueOf(userId))
                 .header("X-Username", username)
@@ -63,6 +70,7 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
         return chain.filter(exchange.mutate().request(request).build());
     }
 
+    /** 返回 401 未认证响应 */
     private Mono<Void> unauthorized(ServerWebExchange exchange, String message) {
         ServerHttpResponse response = exchange.getResponse();
         response.setStatusCode(HttpStatus.OK);

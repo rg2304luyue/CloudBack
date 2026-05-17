@@ -19,33 +19,38 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+/**
+ * 商品服务实现，处理分类树、商品 CRUD、分页搜索、库存扣减。
+ *
+ * @author CloudBack
+ * @since 2025-05-17
+ */
 @Service
 @RequiredArgsConstructor
 public class ProductServiceImpl implements ProductService {
+
     private final CategoryMapper categoryMapper;
     private final ProductMapper productMapper;
 
-    // ========== 分类 ==========
+    // ==================== 分类 ====================
 
+    /** 获取分类树：查所有分类 → 按 parentId 分组 → 递归组装 */
     @Override
     public R<List<Category>> getCategoryTree() {
-        // 查询所有分类
         List<Category> allCategories = categoryMapper.selectList(null);
 
-        // 按parentId分组
         Map<Long, List<Category>> parentMap = allCategories.stream()
                 .collect(Collectors.groupingBy(c -> c.getParentId() == null ? 0L : c.getParentId()));
 
-        // 取顶级分类
         List<Category> roots = parentMap.getOrDefault(0L, new ArrayList<>());
 
-        // 递归组装子分类
         for (Category root : roots) {
             fillChildren(root, parentMap);
         }
         return R.ok(roots);
     }
 
+    /** 递归填充子分类 */
     private void fillChildren(Category parent, Map<Long, List<Category>> parentMap) {
         List<Category> children = parentMap.get(parent.getId());
         if (children != null) {
@@ -74,10 +79,16 @@ public class ProductServiceImpl implements ProductService {
 
     @Override
     public R<String> deleteCategory(Long id) {
-        return null;
+        Long childCount = categoryMapper.selectCount(
+                new LambdaQueryWrapper<Category>().eq(Category::getParentId, id));
+        if (childCount > 0) {
+            throw new BusinessException("请先删除子分类");
+        }
+        categoryMapper.deleteById(id);
+        return R.ok("删除分类成功");
     }
 
-    // ========== 商品 ==========
+    // ==================== 商品 ====================
 
     @Override
     public R<Product> getProductDetail(Long productId) {
@@ -92,20 +103,16 @@ public class ProductServiceImpl implements ProductService {
     public R<List<Product>> getProductList(Long categoryId, Integer page, Integer size, String keyword) {
         LambdaQueryWrapper<Product> wrapper = new LambdaQueryWrapper<>();
 
-        // 状态为"上架"的才展示
         wrapper.eq(Product::getStatus, 1);
 
-        // 分类筛选（支持查所有子分类下的商品需额外处理，这里先做简单筛选）
         if (categoryId != null && categoryId > 0) {
             wrapper.eq(Product::getCategoryId, categoryId);
         }
 
-        // 关键词搜索
         if (keyword != null && !keyword.isEmpty()) {
             wrapper.like(Product::getName, keyword);
         }
 
-        // 按销量降序
         wrapper.orderByDesc(Product::getSales);
 
         Page<Product> productPage = new Page<>(page, size);
@@ -115,11 +122,6 @@ public class ProductServiceImpl implements ProductService {
 
     @Override
     public R<String> addProduct(Product product) {
-        return null;
-    }
-
-    @Override
-    public R<String> updateProduct(Product product) {
         product.setSales(0);
         product.setStatus(1);
         productMapper.insert(product);
@@ -127,17 +129,24 @@ public class ProductServiceImpl implements ProductService {
     }
 
     @Override
-    public R<String> deleteProduct(Long id) {
-        Product dbProduct = productMapper.selectById(id);
+    public R<String> updateProduct(Product product) {
+        Product dbProduct = productMapper.selectById(product.getId());
         if (dbProduct == null) {
             throw new BusinessException(ResultCode.PRODUCT_NOT_EXIST);
         }
-        productMapper.updateById(dbProduct);
+        productMapper.updateById(product);
         return R.ok("更新商品成功");
     }
 
-    // ========== 库存 ==========
+    @Override
+    public R<String> deleteProduct(Long id) {
+        productMapper.deleteById(id);
+        return R.ok("删除商品成功");
+    }
 
+    // ==================== 库存 ====================
+
+    /** 扣减库存，@Transactional 确保原子性；同时增加销量 */
     @Override
     @Transactional(rollbackFor = Exception.class)
     public R<String> deductStock(Long productId, Integer quantity) {

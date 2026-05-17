@@ -2,6 +2,7 @@ package org.cloudback.order.mq;
 
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONObject;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.cloudback.common.constant.SystemConstants;
@@ -12,12 +13,21 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDateTime;
 
+/**
+ * Kafka 消费者：监听支付结果消息，更新订单状态为已支付。
+ * 消费组: order-consumer-group
+ *
+ * @author CloudBack
+ * @since 2025-05-17
+ */
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class PaymentResultConsumer {
+
     private final OrderMapper orderMapper;
 
+    /** 消费支付结果消息 → 更新订单状态为已支付 */
     @KafkaListener(topics = SystemConstants.KAFKA_TOPIC_PAYMENT_RESULT, groupId = "order-consumer-group")
     @Transactional(rollbackFor = Exception.class)
     public void onPaymentResult(String message) {
@@ -32,13 +42,8 @@ public class PaymentResultConsumer {
                 return;
             }
 
-            // 更新订单状态为已支付
-            Order order = new Order();
-            order.setStatus(SystemConstants.ORDER_STATUS_PAID);
-            order.setPayTime(LocalDateTime.now());
-
-            orderMapper.update(order,
-                    new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<Order>()
+            orderMapper.update(null,
+                    new LambdaUpdateWrapper<Order>()
                             .eq(Order::getOrderNo, orderNo)
                             .set(Order::getStatus, SystemConstants.ORDER_STATUS_PAID)
                             .set(Order::getPayTime, LocalDateTime.now()));

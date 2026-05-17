@@ -9,41 +9,51 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 
+/**
+ * 商品服务控制器，提供分类管理和商品 CRUD 接口。
+ * 库存扣减接口供订单服务 Feign 内部调用。
+ *
+ * @author CloudBack
+ * @since 2025-05-17
+ */
 @RestController
 @RequestMapping("/product")
 @RequiredArgsConstructor
 public class ProductController {
+
     private final ProductService productService;
 
-    // ========== 分类 ==========
-
+    /** 获取分类树 */
     @GetMapping("/category")
     public R<List<Category>> getCategoryTree() {
         return productService.getCategoryTree();
     }
 
+    /** 添加分类 */
     @PostMapping("/category")
     public R<String> addCategory(@RequestBody Category category) {
         return productService.addCategory(category);
     }
 
+    /** 修改分类 */
     @PutMapping("/category")
     public R<String> updateCategory(@RequestBody Category category) {
         return productService.updateCategory(category);
     }
 
+    /** 删除分类 */
     @DeleteMapping("/category/{id}")
     public R<String> deleteCategory(@PathVariable Long id) {
         return productService.deleteCategory(id);
     }
 
-    // ========== 商品 ==========
-
+    /** 获取商品详情 */
     @GetMapping("/detail/{id}")
     public R<Product> getProductDetail(@PathVariable Long id) {
         return productService.getProductDetail(id);
     }
 
+    /** 分页搜索商品列表 */
     @GetMapping("/list")
     public R<List<Product>> getProductList(@RequestParam(required = false) Long categoryId,
                                            @RequestParam(defaultValue = "1") Integer page,
@@ -52,23 +62,25 @@ public class ProductController {
         return productService.getProductList(categoryId, page, size, keyword);
     }
 
+    /** 添加商品 */
     @PostMapping
     public R<String> addProduct(@RequestBody Product product) {
         return productService.addProduct(product);
     }
 
+    /** 修改商品 */
     @PutMapping
     public R<String> updateProduct(@RequestBody Product product) {
         return productService.updateProduct(product);
     }
 
+    /** 删除商品 */
     @DeleteMapping("/{id}")
     public R<String> deleteProduct(@PathVariable Long id) {
         return productService.deleteProduct(id);
     }
 
-    // ========== 库存（供订单服务内部调用）==========
-
+    /** 扣减库存（供订单服务 Feign 内部调用） */
     @PutMapping("/stock/deduct/{id}")
     public R<String> deductStock(@PathVariable Long id,
                                  @RequestParam Integer quantity) {

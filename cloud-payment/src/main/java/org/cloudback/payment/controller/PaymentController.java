@@ -9,18 +9,23 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+/**
+ * 支付控制器，提供支付记录查询接口。
+ * 支付宝异步回调接口预留 TODO。
+ *
+ * @author CloudBack
+ * @since 2025-05-17
+ */
 @RestController
 @RequestMapping("/payment")
 @RequiredArgsConstructor
 public class PaymentController {
+
     private final PaymentService paymentService;
 
+    /** 根据订单号查询支付记录 */
     @GetMapping("/{orderNo}")
     public R<Payment> getPaymentByOrderNo(@PathVariable String orderNo) {
         return paymentService.getPaymentByOrderNo(orderNo);
     }
-
-    // TODO: 支付宝异步通知回调接口
-    // @PostMapping("/alipay/notify")
-    // public String alipayNotify(@RequestParam Map<String, String> params) { ... }
 }

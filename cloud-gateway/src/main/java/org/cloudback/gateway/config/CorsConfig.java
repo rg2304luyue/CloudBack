@@ -8,9 +8,17 @@ import org.springframework.web.cors.reactive.UrlBasedCorsConfigurationSource;
 
 import java.util.List;
 
+/**
+ * 跨域配置，允许前端（任意来源）跨域访问 Gateway。
+ * Gateway 基于 WebFlux，需使用 CorsWebFilter 而非传统 CorsFilter。
+ *
+ * @author CloudBack
+ * @since 2025-05-17
+ */
 @Configuration
 public class CorsConfig {
 
+    /** 注册 CorsWebFilter，放行所有来源和方法 */
     @Bean
     public CorsWebFilter corsWebFilter() {
         CorsConfiguration config = new CorsConfiguration();

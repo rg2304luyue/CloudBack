@@ -14,12 +14,21 @@ import org.springframework.stereotype.Service;
 
 import java.util.List;
 
+/**
+ * 用户服务实现，处理用户信息查询/修改和收货地址管理。
+ * 所有地址操作均校验 userId，防止越权。
+ *
+ * @author CloudBack
+ * @since 2025-05-17
+ */
 @Service
 @RequiredArgsConstructor
 public class UserServiceImpl implements UserService {
+
     private final UserMapper userMapper;
     private final AddressMapper addressMapper;
 
+    /** 取消该用户的所有默认地址 */
     private void cancelDefaultAddress(Long userId) {
         Address update = new Address();
         update.setIsDefault(0);
@@ -33,7 +42,6 @@ public class UserServiceImpl implements UserService {
         if (user == null) {
             throw new BusinessException(ResultCode.USER_NOT_EXIST);
         }
-        // 不返回密码
         user.setPassword(null);
         return R.ok(user);
     }
@@ -70,7 +78,6 @@ public class UserServiceImpl implements UserService {
     @Override
     public R<String> addAddress(Long userId, Address address) {
         address.setUserId(userId);
-        // 如果设为默认地址，先取消其他默认
         if (address.getIsDefault() != null && address.getIsDefault() == 1) {
             cancelDefaultAddress(userId);
         }
@@ -84,7 +91,6 @@ public class UserServiceImpl implements UserService {
         if (dbAddress == null || !dbAddress.getUserId().equals(userId)) {
             throw new BusinessException(ResultCode.NOT_FOUND.getCode(), "地址不存在");
         }
-        // 如果设为默认，先取消其他默认
         if (address.getIsDefault() != null && address.getIsDefault() == 1) {
             cancelDefaultAddress(userId);
         }

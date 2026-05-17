@@ -14,12 +14,22 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
+/**
+ * 支付服务实现，处理支付记录创建和查询。
+ * 模拟支付：生成雪花算法交易号，直接标记支付成功。
+ * 对接支付宝沙箱时替换 processPayment 中逻辑。
+ *
+ * @author CloudBack
+ * @since 2025-05-17
+ */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class PaymentServiceImpl implements PaymentService {
+
     private final PaymentMapper paymentMapper;
 
+    /** 根据订单号查询支付记录 */
     @Override
     public R<Payment> getPaymentByOrderNo(String orderNo) {
         Payment payment = paymentMapper.selectOne(
@@ -30,10 +40,10 @@ public class PaymentServiceImpl implements PaymentService {
         return R.ok(payment);
     }
 
+    /** 处理支付：生成交易号 → 创建支付记录 → 标记成功 */
     @Override
     @Transactional(rollbackFor = Exception.class)
     public R<String> processPayment(String orderNo, Long userId, BigDecimal amount) {
-        // 生成模拟交易号（实际对接支付宝时替换为支付宝返回的trade_no）
         String tradeNo = IdUtil.getSnowflakeNextIdStr();
 
         Payment payment = new Payment();
@@ -41,7 +51,7 @@ public class PaymentServiceImpl implements PaymentService {
         payment.setUserId(userId);
         payment.setAmount(amount);
         payment.setPayMethod("ALIPAY");
-        payment.setStatus(1); // 模拟支付成功
+        payment.setStatus(1);
         payment.setTradeNo(tradeNo);
         payment.setPayTime(LocalDateTime.now());
 

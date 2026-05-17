@@ -28,21 +28,30 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * 订单服务实现，处理下单全流程。
+ * 流程: 获取购物车勾选商品 → 扣减库存 → 查询地址 → 创建订单及明细 → 清空购物车 → Kafka 通知支付
+ * 整个过程由 @Transactional 保护，任一步骤失败则全部回滚。
+ *
+ * @author CloudBack
+ * @since 2025-05-17
+ */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class OrderServiceImpl implements OrderService {
+
     private final OrderMapper orderMapper;
     private final OrderItemMapper orderItemMapper;
     private final CartFeignClient cartFeignClient;
     private final ProductFeignClient productFeignClient;
-    private final KafkaTemplate<String, String> kafkaTemplate;
     private final UserFeignClient userFeignClient;
+    private final KafkaTemplate<String, String> kafkaTemplate;
 
+    /** 创建订单：Feign 调用 cart/user/product → 入库 → Kafka 通知 */
     @Override
     @Transactional(rollbackFor = Exception.class)
     public R<Order> createOrder(Long userId, Long addressId, String remark) {
-        // 1. 从购物车获取已勾选商品
         R<List<Map<String, Object>>> cartResult = cartFeignClient.getCheckedItems();
         if (cartResult.getData() == null || cartResult.getData().isEmpty()) {
             throw new BusinessException("购物车中没有已勾选的商品");
@@ -50,7 +59,6 @@ public class OrderServiceImpl implements OrderService {
 
         List<Map<String, Object>> checkedItems = cartResult.getData();
 
-        // 2. 扣减库存
         for (Map<String, Object> item : checkedItems) {
             Long productId = Long.valueOf(item.get("productId").toString());
             Integer quantity = Integer.valueOf(item.get("quantity").toString());
@@ -60,7 +68,6 @@ public class OrderServiceImpl implements OrderService {
             }
         }
 
-        // 3. 计算总金额 + 构建订单明细
         String orderNo = IdUtil.getSnowflakeNextIdStr();
         BigDecimal totalAmount = BigDecimal.ZERO;
         List<OrderItem> orderItems = new ArrayList<>();
@@ -76,7 +83,6 @@ public class OrderServiceImpl implements OrderService {
             totalAmount = totalAmount.add(itemTotal);
 
             OrderItem orderItem = new OrderItem();
-            orderItem.setOrderId(null); // 等下关联
             orderItem.setOrderNo(orderNo);
             orderItem.setProductId(productId);
             orderItem.setProductName(productName);
@@ -87,14 +93,13 @@ public class OrderServiceImpl implements OrderService {
             orderItems.add(orderItem);
         }
 
-        // 4. 创建订单
         Order order = new Order();
         order.setOrderNo(orderNo);
         order.setUserId(userId);
         order.setTotalAmount(totalAmount);
         order.setStatus(SystemConstants.ORDER_STATUS_UNPAID);
         order.setRemark(remark);
-        // 查询收货地址
+
         if (addressId != null) {
             R<Map<String, Object>> addressResult = userFeignClient.getAddressById(userId, addressId);
             if (addressResult.getCode() == 200 && addressResult.getData() != null) {
@@ -108,16 +113,13 @@ public class OrderServiceImpl implements OrderService {
         }
         orderMapper.insert(order);
 
-        // 5. 关联订单ID并保存订单明细
         for (OrderItem item : orderItems) {
             item.setOrderId(order.getId());
             orderItemMapper.insert(item);
         }
 
-        // 6. 清空购物车中已下单的商品
         cartFeignClient.clearCart();
 
-        // 7. 发送Kafka消息通知支付服务
         Map<String, Object> kafkaMsg = new HashMap<>();
         kafkaMsg.put("orderId", order.getId());
         kafkaMsg.put("orderNo", orderNo);
@@ -130,6 +132,7 @@ public class OrderServiceImpl implements OrderService {
         return R.ok("下单成功", order);
     }
 
+    /** 查询订单详情，校验 userId 防越权 */
     @Override
     public R<Order> getOrderDetail(Long userId, Long orderId) {
         Order order = orderMapper.selectById(orderId);
@@ -139,6 +142,7 @@ public class OrderServiceImpl implements OrderService {
         return R.ok(order);
     }
 
+    /** 分页查询用户订单列表，按创建时间降序 */
     @Override
     public R<List<Order>> getOrderList(Long userId, Integer page, Integer size) {
         LambdaQueryWrapper<Order> wrapper = new LambdaQueryWrapper<Order>()
@@ -149,6 +153,7 @@ public class OrderServiceImpl implements OrderService {
         return R.ok(orderPage.getRecords());
     }
 
+    /** 取消订单，仅待支付状态可取消 */
     @Override
     @Transactional(rollbackFor = Exception.class)
     public R<String> cancelOrder(Long userId, Long orderId) {
