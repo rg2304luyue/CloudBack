@@ -12,6 +12,7 @@ import org.cloudback.common.result.R;
 import org.cloudback.common.result.ResultCode;
 import org.cloudback.order.feign.CartFeignClient;
 import org.cloudback.order.feign.ProductFeignClient;
+import org.cloudback.order.feign.UserFeignClient;
 import org.cloudback.order.mapper.OrderItemMapper;
 import org.cloudback.order.mapper.OrderMapper;
 import org.cloudback.order.model.entity.Order;
@@ -36,6 +37,7 @@ public class OrderServiceImpl implements OrderService {
     private final CartFeignClient cartFeignClient;
     private final ProductFeignClient productFeignClient;
     private final KafkaTemplate<String, String> kafkaTemplate;
+    private final UserFeignClient userFeignClient;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -92,7 +94,18 @@ public class OrderServiceImpl implements OrderService {
         order.setTotalAmount(totalAmount);
         order.setStatus(SystemConstants.ORDER_STATUS_UNPAID);
         order.setRemark(remark);
-        // TODO: 根据addressId查询地址信息填入receiver字段
+        // 查询收货地址
+        if (addressId != null) {
+            R<Map<String, Object>> addressResult = userFeignClient.getAddressById(userId, addressId);
+            if (addressResult.getCode() == 200 && addressResult.getData() != null) {
+                Map<String, Object> addr = addressResult.getData();
+                order.setReceiverName((String) addr.get("receiverName"));
+                order.setReceiverPhone((String) addr.get("phone"));
+                String fullAddress = addr.get("province").toString() + addr.get("city").toString() +
+                                     addr.get("district").toString() + addr.get("detail").toString();
+                order.setReceiverAddress(fullAddress);
+            }
+        }
         orderMapper.insert(order);
 
         // 5. 关联订单ID并保存订单明细
