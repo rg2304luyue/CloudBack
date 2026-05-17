@@ -1,0 +1,4 @@
+org.cloudback.common.config.MyBatisPlusConfig
+org.cloudback.common.config.RedisConfig
+org.cloudback.common.config.AutoFillMetaObjectHandler
+org.cloudback.common.exception.GlobalExceptionHandler
