@@ -7,16 +7,16 @@ spring:
   cloud:
     nacos:
       discovery:
-        server-addr: ${NACOS_ADDR:localhost:8848}
+        server-addr: ${NACOS_ADDR:${VM_HOST:localhost}:8848}
         namespace: ${NACOS_NAMESPACE:}
         username: nacos
         password: nacos
       config:
-        server-addr: ${NACOS_ADDR:localhost:8848}
+        server-addr: ${NACOS_ADDR:${VM_HOST:localhost}:8848}
         file-extension: yml
     sentinel:
       transport:
-        dashboard: ${SENTINEL_ADDR:localhost:8858}
+        dashboard: ${SENTINEL_ADDR:${VM_HOST:localhost}:8858}
       eager: true
     gateway:
       discovery:

@@ -47,5 +47,6 @@ docker/volumes/
 # ======== Environment ========
 .env
 .env.local
+.env.example
 application-local.yml
 docker/.env

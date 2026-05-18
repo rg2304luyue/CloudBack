@@ -284,114 +284,198 @@ POST /order/create (Header: Authorization: Bearer <token>)
 
 ### 环境要求
 
-- JDK 21
-- Maven 3.9+
-- MySQL 8.0+（宿主机直接安装）
-- Redis 7.x（宿主机直接安装）
-- Docker & Docker Compose（仅用于运行 Nacos / Kafka / Sentinel 等中间件）
+|组件|位置|说明|
+|---|---|---|
+|JDK 21|本地|编译和运行 Spring Boot|
+|Maven 3.9+|本地|构建项目|
+|MySQL 8.0+|VM|数据存储（用户、商品、订单等）|
+|Redis 7.x|VM|缓存（购物车 Hash）|
+|Nacos 2.5|VM (Docker)|注册 & 配置中心|
+|Kafka 3.9|VM (Docker)|消息队列（订单创建 / 支付回调）|
+|Sentinel|VM (Docker)|熔断限流控制台|
+|Kafka UI|VM (Docker)|Kafka 管理界面|
 
-### 1. 初始化数据库
+---
 
-在宿主机 MySQL 上执行初始化脚本，创建 `cloud_mall` 和 `nacos_config` 两个数据库及所有表：
+### 第一步：虚拟机环境准备
+
+SSH 登录你的 Ubuntu 24.04 VM，按顺序完成以下操作。
+
+#### 1.1 把项目文件弄到 VM 上
+
+两种方式任选一种：
+
+##### 方式 A：直接 git clone（推荐）
 
 ```bash
-mysql -u root -p < sql/init.sql
+git clone <你的仓库地址> /home/<你的用户名>/tmp/CloudBack/
 ```
 
-> 如果 MySQL 的 root 密码不是 `root`，请同步修改 `docker/.env` 中的 `MYSQL_PASSWORD` 和 `docker/nacos/conf/application.properties` 中的 `db.password.0`。
+##### 方式 B：手动复制
 
-### 2. 配置环境变量
+把 Windows 上项目里的 `sql/init.sql` 和 `docker/` 文件夹，通过 VS Code Remote-SSH 或任何 FTP 工具拖到 VM 的 `/tmp/` 目录下。
 
-编辑 `docker/.env`，按需修改以下变量：
+#### 1.2 MySQL — 初始化数据库
 
-|变量|默认值|说明|
-|---|---|---|
-|MYSQL_USER|root|MySQL 用户名|
-|MYSQL_PASSWORD|root|MySQL 密码|
-|MYSQL_PORT|3306|MySQL 端口|
-|REDIS_PASSWORD|redis|Redis 密码|
-|KAFKA_HOST|localhost|Kafka 广播地址（Spring Boot 与 Docker 在同一机器时无需修改）|
-|NACOS_ADDR|localhost:8848|Nacos 地址|
-|SENTINEL_ADDR|localhost:8858|Sentinel 地址|
+\> ⚠️ **核心注意**：项目自带的 `init.sql` 仅创建了空库。**Nacos 2.5.x 必须导入官方完整的系统表结构**，且由于 Docker 容器属于远程连接，必须彻底放行 MySQL 远程权限。
 
-### 3. 启动中间件（Docker）
+**1. 修改 MySQL 监听地址（解决容器连不上宿主机）** 
 
 ```bash
-cd docker
+sudo nano /etc/mysql/mysql.conf.d/mysqld.cnf
+
+# 将 bind-address = 127.0.0.1 修改为：
+bind-address = 0.0.0.0
+
+# 保存退出后重启 MySQL
+sudo systemctl restart mysql
+```
+
+**2. 登录 MySQL 并导入业务表、放行容器账号权限** 
+
+```bash
+# 找到 init.sql 的位置（git clone 的话在 /tmp/CloudBack/sql/，手动复制的话在 /tmp/）
+mysql -u root -p < /home/<你的用户名>/tmp/CloudBack/sql/init.sql
+```
+
+**3. 导入 Nacos 核心系统表（解决 Nacos 启动因缺表闪退）** 
+
+```bash
+# 登录数据库
+mysql -u root -p
+
+# 执行以下 SQL 切换并导入官方表结构（官方脚本可从项目或 Nacos 官网获取）
+mysql> USE nacos_config;
+mysql> source /home/<你的用户名>/tmp/CloudBack/docker/nacos/conf/mysql-schema.sql;
+
+# 开启 root 的全网/容器段访问权限（若密码不是 root 请自行替换）
+mysql> CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED BY 'root';
+mysql> GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;
+mysql> ALTER USER 'root'@'%' IDENTIFIED WITH mysql_native_password BY 'root';
+mysql> FLUSH PRIVILEGES;
+mysql> exit;
+```
+
+> 如果 MySQL 的 root 密码不是 `root`，记住你的密码，下一步需要用到。
+
+#### 1.3 Redis — 确认运行状态和密码
+
+```bash
+systemctl status redis-server           # 检查是否运行
+redis-cli -a redis ping                # 测试密码连接，应返回 PONG
+```
+
+如果 Redis 未设置密码：
+
+```bash
+sudo sed -i 's/^# requirepass .*/requirepass redis/' /etc/redis/redis.conf
+sudo systemctl restart redis-server
+```
+
+#### 1.4 Docker 中间件 — Nacos / Kafka / Sentinel
+
+💡 **国内镜像拉取小贴士**：若由于网络环境导致 `docker compose up` 报 403/429 或 TLS 超时，请开启 Windows 宿主机代理的“允许局域网连接（Allow LAN）”，并在 Windows 防火墙中为 `7890` 端口添加**入站规则**。随后为虚拟机 Docker 配置守护进程代理指向物理机（如 `192.168.91.1:7890`）直连官方 Hub。
+
+```bash
+# 进入 docker 目录（根据 1.1 的方式选择路径）
+cd /tmp/docker                    # 手动复制的
+cd /tmp/CloudBack/docker          # git clone 的
+
+# 如果你的 MySQL root 密码不是 root，先编辑 .env
+vim .env
+# 把 MYSQL_PASSWORD 改成你的实际密码
+
+# 启动
 docker compose up -d
 ```
 
-|服务|端口|账号/密码|说明|
-|---|---|---|---|
-|Nacos 2.5|8848|nacos / nacos|注册+配置中心|
-|Kafka 3.9|9092|-|自动创建 Topic|
-|Kafka UI|8088|-|Kafka 管理界面|
-|Sentinel|8858|admin / admin123|熔断限流控制台|
-
-|服务|端口|部署方式|说明|
-|---|---|---|---|
-|MySQL 8.0+|3306|宿主机|已安装，需手动执行 init.sql|
-|Redis 7.x|6379|宿主机|已安装，需配置密码|
-
-### 4. 编译项目
+确认 4 个容器全部 `Up`：
 
 ```bash
-export JAVA_HOME=/path/to/jdk-21
+docker compose ps
+```
+
+|容器|端口|账号/密码|管理地址|
+|---|---|---|---|
+|cloud-nacos|8848|nacos / nacos|<http://192.168.91.130:8848/nacos>|
+|cloud-kafka|9092|-|-|
+|cloud-kafka-ui|8088|-|<http://192.168.91.130:8088>|
+|cloud-sentinel|8858|admin / admin123|<http://192.168.91.130:8858>|
+
+> **防火墙放行**（VM 上执行）：
+>
+> ```bash
+> sudo ufw allow 3306,6379,8848,9092,8088,8858/tcp
+> ```
+
+---
+
+### 第二步：本地开发（Windows）
+
+#### 2.1 配置 .env
+
+在项目根目录（`CloudBack/`）已有 `.env` 文件（从 `.env.example` 复制而来），编辑 `VM_HOST` 为 VM 的 IP：
+
+```ini
+VM_HOST=192.168.91.130
+```
+
+改这一个值即可，下方所有地址（MySQL、Redis、Nacos、Sentinel、Kafka）会自动跟随。
+
+> 原理：`application.yml` 中所有连接地址的默认值都是 `${VM_HOST:localhost}:端口`，本地启动时 dotenv 加载器从 `.env` 读取 `VM_HOST` 并注入。无需设置系统环境变量。
+
+#### 2.2 编译
+
+```bash
 mvn clean compile -DskipTests
 ```
 
-### 5. 启动服务
+#### 2.3 启动微服务
 
-按依赖顺序启动：
+按依赖顺序分两批启动：
 
 ```bash
-# 先启动不依赖其他服务的基础服务
+# 第一批：基础服务（不依赖其他微服务）
 mvn spring-boot:run -pl cloud-gateway
 mvn spring-boot:run -pl cloud-auth
 mvn spring-boot:run -pl cloud-user
 mvn spring-boot:run -pl cloud-product
 
-# 再启动有 Feign 依赖的服务
+# 第二批：有 Feign 远程调用
 mvn spring-boot:run -pl cloud-cart
 mvn spring-boot:run -pl cloud-order
 mvn spring-boot:run -pl cloud-payment
 ```
 
-或 IDE 中逐个运行各服务的 `*Application.java` 的 main 方法。
+或在 IntelliJ IDEA 中为每个模块创建 Spring Boot Run Configuration，`Environment variables` 中添加 `VM_HOST=192.168.91.130` 后逐个启动。
 
-### 6. 验证
+### 验证
 
-访问 Nacos 控制台确认所有服务已注册：<http://localhost:8848>
+访问 Nacos 控制台：<http://192.168.91.130:8848/nacos>，进入"服务管理 → 服务列表"，确认 7 个服务全部已注册（cloud-gateway, cloud-auth, cloud-user, cloud-product, cloud-cart, cloud-order, cloud-payment）。
 
-API 测试：
+API 测试（注意 `localhost:8080` 走的是本地 Gateway，Gateway 通过 Nacos 发现 VM 上的后端服务）：
 
 ```bash
-# ======== 认证 ========
-
 # 注册用户
 curl -X POST "http://localhost:8080/api/auth/register" \
   -d "username=test&password=123456&nickname=测试用户"
 
-# 登录（保存返回的 token）
+# 登录
 curl -X POST "http://localhost:8080/api/auth/login" \
   -d "username=test&password=123456"
 # → {"code":200,"data":"eyJhbGciOiJIUzI1NiJ9..."}
 
 export TOKEN="<上面返回的token>"
 
-# ======== 商品 ========
-
 # 查看商品列表
 curl -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/product/list?page=1&size=10"
 
-# 添加商品（需要先手动插入测试数据或调接口）
+# 添加商品
 curl -X POST -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"name":"iPhone 16","price":6999,"stock":100,"categoryId":1}' \
   "http://localhost:8080/api/product"
-
-# ======== 购物车 ========
 
 # 加入购物车
 curl -X POST -H "Authorization: Bearer $TOKEN" \
@@ -400,8 +484,6 @@ curl -X POST -H "Authorization: Bearer $TOKEN" \
 # 查看购物车
 curl -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/cart/list"
-
-# ======== 订单 ========
 
 # 添加收货地址
 curl -X POST -H "Authorization: Bearer $TOKEN" \
@@ -417,8 +499,6 @@ curl -X POST -H "Authorization: Bearer $TOKEN" \
 curl -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/order/list?page=1&size=10"
 
-# ======== 支付 ========
-
 # 查看支付记录
 curl -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/payment/<订单号>"
@@ -426,21 +506,40 @@ curl -H "Authorization: Bearer $TOKEN" \
 
 ## 环境变量
 
-各服务通过环境变量配置中间件连接地址，默认值指向本地：
+所有中间件连接地址通过项目根目录的 `.env` 文件统一管理，`VM_HOST` 作为一级开关：
+
+```ini
+# .env — 只需改这一个值
+VM_HOST=192.168.91.130
+
+# 以下变量引用 VM_HOST，自动跟随
+MYSQL_ADDR=${VM_HOST}:3306
+REDIS_ADDR=${VM_HOST}
+NACOS_ADDR=${VM_HOST}:8848
+SENTINEL_ADDR=${VM_HOST}:8858
+KAFKA_ADDR=${VM_HOST}:9092
+```
+
+支持单独覆盖某个服务地址（优先级高于 `VM_HOST`），例如：
+
+```bash
+# 单独覆盖 MySQL（适用于 MySQL 不在同一台机器）
+export MYSQL_ADDR=10.0.0.50:3307
+mvn spring-boot:run -pl cloud-auth
+```
 
 |变量|默认值|说明|
 |---|---|---|
-|NACOS_ADDR|localhost:8848|Nacos 地址|
-|MYSQL_ADDR|localhost:3306|MySQL 地址|
+|VM_HOST|localhost|所有中间件的目标 IP|
+|MYSQL_ADDR|`${VM_HOST}:3306`|MySQL 地址|
 |MYSQL_USER|root|MySQL 用户名|
-|MYSQL_PASSWORD|root123|MySQL 密码|
-|REDIS_ADDR|localhost|Redis 地址|
+|MYSQL_PASSWORD|root|MySQL 密码|
+|REDIS_ADDR|`${VM_HOST}`|Redis 地址|
 |REDIS_PORT|6379|Redis 端口|
-|REDIS_PASSWORD|redis123|Redis 密码|
-|KAFKA_ADDR|localhost:9092|Kafka 地址|
-|SENTINEL_ADDR|localhost:8858|Sentinel 地址|
-
-生产环境可通过 `-e` 或 `export` 覆盖。
+|REDIS_PASSWORD|redis|Redis 密码|
+|NACOS_ADDR|`${VM_HOST}:8848`|Nacos 地址|
+|SENTINEL_ADDR|`${VM_HOST}:8858`|Sentinel 地址|
+|KAFKA_ADDR|`${VM_HOST}:9092`|Kafka 地址|
 
 ## 安全设计
 
