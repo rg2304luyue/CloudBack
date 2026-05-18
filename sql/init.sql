@@ -1,9 +1,15 @@
 -- ==========================================
--- CloudBack 电商系统初始化SQL
+-- CloudBack 电商系统初始化 SQL
+-- 在宿主机 MySQL 上手动执行：
+--   mysql -u root -p < init.sql
+-- 或逐段复制到 MySQL 客户端中执行
 -- ==========================================
 
--- 创建数据库
+-- Nacos 配置数据库
 CREATE DATABASE IF NOT EXISTS `nacos_config` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- 业务数据库
+CREATE DATABASE IF NOT EXISTS `cloud_mall` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 USE `cloud_mall`;
 

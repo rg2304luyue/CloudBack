@@ -1,10 +1,17 @@
-HELP.md
+# ======== Maven ========
 target/
-.mvn/wrapper/maven-wrapper.jar
+!.mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/
 
-### STS ###
+# ======== IDE ========
+### IntelliJ IDEA ###
+.idea/
+*.iws
+*.iml
+*.ipr
+
+### STS (Spring Tool Suite) ###
 .apt_generated
 .classpath
 .factorypath
@@ -13,11 +20,8 @@ target/
 .springBeans
 .sts4-cache
 
-### IntelliJ IDEA ###
-.idea
-*.iws
-*.iml
-*.ipr
+### VS Code ###
+.vscode/
 
 ### NetBeans ###
 /nbproject/private/
@@ -25,9 +29,23 @@ target/
 /dist/
 /nbdist/
 /.nb-gradle/
-build/
-!**/src/main/**/build/
-!**/src/test/**/build/
 
-### VS Code ###
-.vscode/
+# ======== OS ========
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# ======== Log ========
+logs/
+*.log
+
+# ======== Docker volumes ========
+docker/volumes/
+
+# ======== Environment ========
+.env
+.env.local
+application-local.yml
+docker/.env

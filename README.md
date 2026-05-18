@@ -4,29 +4,29 @@
 
 ## 技术栈
 
-| 层级 | 技术 | 版本 |
-|------|------|------|
-| 语言 | Java | 21 |
-| 框架 | Spring Boot | 4.0.6 |
-| 微服务 | Spring Cloud | 2025.0.0 (Northfields) |
-| 微服务 | Spring Cloud Alibaba | 2025.0.0.0 |
-| 注册/配置中心 | Nacos | 2.5.x |
-| API 网关 | Spring Cloud Gateway | - |
-| 安全认证 | JWT (jjwt 0.12.6) | - |
-| ORM | MyBatis-Plus | 3.5.11 |
-| 连接池 | Druid | 1.2.24 |
-| 缓存 | Redis | 7.x |
-| 消息队列 | Kafka | 3.9.x |
-| 熔断限流 | Sentinel | 1.8.x |
-| 远程调用 | OpenFeign | - |
-| 工具库 | Hutool | 5.8.x |
-| JSON | Fastjson2 | 2.0.x |
-| API 文档 | Knife4j | 4.5.0 |
-| 构建 | Maven | 3.9+ |
+|层级|技术|版本|
+|---|---|---|
+|语言|Java|21|
+|框架|Spring Boot|4.0.6|
+|微服务|Spring Cloud|2025.0.0 (Northfields)|
+|微服务|Spring Cloud Alibaba|2025.0.0.0|
+|注册/配置中心|Nacos|2.5.x|
+|API 网关|Spring Cloud Gateway|-|
+|安全认证|JWT (jjwt 0.12.6)|-|
+|ORM|MyBatis-Plus|3.5.11|
+|连接池|Druid|1.2.24|
+|缓存|Redis|7.x|
+|消息队列|Kafka|3.9.x|
+|熔断限流|Sentinel|1.8.x|
+|远程调用|OpenFeign|-|
+|工具库|Hutool|5.8.x|
+|JSON|Fastjson2|2.0.x|
+|API 文档|Knife4j|4.5.0|
+|构建|Maven|3.9+|
 
 ## 项目结构
 
-```
+```text
 CloudBack/
 ├── pom.xml                              # 父 POM，统一依赖版本管理
 ├── cloud-common/                        # 公共模块
@@ -99,7 +99,7 @@ CloudBack/
 
 ## 系统架构
 
-```
+```text
                             ┌─────────────┐
                             │   Browser   │
                             │  Vue 3 前端 │
@@ -155,7 +155,7 @@ CloudBack/
 
 ### 用户登录
 
-```
+```text
 POST /auth/login (白名单，无需 Token)
   → AuthController.login()
     → AuthServiceImpl.login()
@@ -167,7 +167,7 @@ POST /auth/login (白名单，无需 Token)
 
 ### 用户下单（完整链路）
 
-```
+```text
 POST /order/create (Header: Authorization: Bearer <token>)
   │
   │  [Gateway] AuthGlobalFilter 解析 JWT → 注入 X-User-Id / X-Username
@@ -203,7 +203,7 @@ POST /order/create (Header: Authorization: Bearer <token>)
 
 ### 购物车 Redis 数据结构
 
-```
+```text
   购物车数据完全存储在 Redis，结构: Hash
 
   Key:   cloud:cart:{userId}
@@ -243,40 +243,40 @@ POST /order/create (Header: Authorization: Bearer <token>)
 {
   "code": 200,
   "message": "操作成功",
-  "data": { ... }
+  "data": { "": "" }
 }
 ```
 
-| 状态码 | 含义 |
-|--------|------|
-| 200 | 操作成功 |
-| 400 | 参数错误 |
-| 401 | 未登录或 Token 已过期 |
-| 403 | 没有访问权限 |
-| 404 | 资源不存在 |
-| 500 | 服务内部错误 |
-| 1001 | 用户名或密码错误 |
-| 1002 | 用户不存在 |
-| 1003 | 用户已存在 |
-| 1004 | Token 已过期 |
-| 1005 | Token 无效 |
-| 2001 | 商品不存在 |
-| 2002 | 库存不足 |
-| 3001 | 订单不存在 |
-| 3002 | 订单状态异常 |
-| 4001 | 支付失败 |
+|状态码|含义|
+|---|---|
+|200|操作成功|
+|400|参数错误|
+|401|未登录或 Token 已过期|
+|403|没有访问权限|
+|404|资源不存在|
+|500|服务内部错误|
+|1001|用户名或密码错误|
+|1002|用户不存在|
+|1003|用户已存在|
+|1004|Token 已过期|
+|1005|Token 无效|
+|2001|商品不存在|
+|2002|库存不足|
+|3001|订单不存在|
+|3002|订单状态异常|
+|4001|支付失败|
 
 ## 数据库设计
 
-| 表名 | 说明 | 关键字段 |
-|------|------|---------|
-| user | 用户表 | username(唯一), password(BCrypt加密), status |
-| address | 收货地址 | user_id, receiver_name, is_default |
-| category | 商品分类 | parent_id, name, sort |
-| product | 商品表 | category_id, price, stock, sales, status |
-| order_info | 订单表 | order_no(唯一), user_id, total_amount, status |
-| order_item | 订单明细 | order_id, product_id, quantity, price |
-| payment | 支付记录 | order_no, amount, status, trade_no |
+|表名|说明|关键字段|
+|---|---|---|
+|user|用户表|username(唯一), password(BCrypt加密), status|
+|address|收货地址|user_id, receiver_name, is_default|
+|category|商品分类|parent_id, name, sort|
+|product|商品表|category_id, price, stock, sales, status|
+|order_info|订单表|order_no(唯一), user_id, total_amount, status|
+|order_item|订单明细|order_id, product_id, quantity, price|
+|payment|支付记录|order_no, amount, status, trade_no|
 
 所有表使用 MyBatis-Plus 逻辑删除 (deleted=0/1)，id 使用雪花算法自动生成。
 
@@ -286,49 +286,61 @@ POST /order/create (Header: Authorization: Bearer <token>)
 
 - JDK 21
 - Maven 3.9+
-- Docker & Docker Compose（用于启动中间件）
+- MySQL 8.0+（宿主机直接安装）
+- Redis 7.x（宿主机直接安装）
+- Docker & Docker Compose（仅用于运行 Nacos / Kafka / Sentinel 等中间件）
 
-### 1. 克隆项目
+### 1. 初始化数据库
+
+在宿主机 MySQL 上执行初始化脚本，创建 `cloud_mall` 和 `nacos_config` 两个数据库及所有表：
 
 ```bash
-git clone <your-repo-url> CloudBack
-cd CloudBack
+mysql -u root -p < sql/init.sql
 ```
 
-### 2. 启动中间件
+> 如果 MySQL 的 root 密码不是 `root`，请同步修改 `docker/.env` 中的 `MYSQL_PASSWORD` 和 `docker/nacos/conf/application.properties` 中的 `db.password.0`。
 
-修改 `docker/docker-compose.yml` 中 Kafka 的 IP 为你的服务器地址：
+### 2. 配置环境变量
 
-```yaml
-KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://<你的Ubuntu虚拟机IP>:9092
-```
+编辑 `docker/.env`，按需修改以下变量：
 
-启动：
+|变量|默认值|说明|
+|---|---|---|
+|MYSQL_USER|root|MySQL 用户名|
+|MYSQL_PASSWORD|root|MySQL 密码|
+|MYSQL_PORT|3306|MySQL 端口|
+|REDIS_PASSWORD|redis|Redis 密码|
+|KAFKA_HOST|localhost|Kafka 广播地址（Spring Boot 与 Docker 在同一机器时无需修改）|
+|NACOS_ADDR|localhost:8848|Nacos 地址|
+|SENTINEL_ADDR|localhost:8858|Sentinel 地址|
+
+### 3. 启动中间件（Docker）
 
 ```bash
 cd docker
 docker compose up -d
 ```
 
-启动的中间件：
+|服务|端口|账号/密码|说明|
+|---|---|---|---|
+|Nacos 2.5|8848|nacos / nacos|注册+配置中心|
+|Kafka 3.9|9092|-|自动创建 Topic|
+|Kafka UI|8088|-|Kafka 管理界面|
+|Sentinel|8858|admin / admin123|熔断限流控制台|
 
-| 服务 | 端口 | 账号/密码 | 说明 |
-|------|------|-----------|------|
-| MySQL 8.4 | 3306 | root / root123 | 自动执行 init.sql |
-| Redis 7 | 6379 | 密码 redis123 | AOF 持久化 |
-| Nacos 2.5 | 8848 | nacos / nacos | 注册+配置中心 |
-| Kafka 3.9 | 9092 | - | 自动创建 Topic |
-| Kafka UI | 8088 | - | Kafka 管理界面 |
-| Sentinel | 8858 | admin / admin123 | 熔断限流控制台 |
+|服务|端口|部署方式|说明|
+|---|---|---|---|
+|MySQL 8.0+|3306|宿主机|已安装，需手动执行 init.sql|
+|Redis 7.x|6379|宿主机|已安装，需配置密码|
 
-### 3. 编译项目
+### 4. 编译项目
 
 ```bash
 export JAVA_HOME=/path/to/jdk-21
 mvn clean compile -DskipTests
 ```
 
-### 4. 启动服务
+### 5. 启动服务
 
 按依赖顺序启动：
 
@@ -347,9 +359,9 @@ mvn spring-boot:run -pl cloud-payment
 
 或 IDE 中逐个运行各服务的 `*Application.java` 的 main 方法。
 
-### 5. 验证
+### 6. 验证
 
-访问 Nacos 控制台确认所有服务已注册：http://localhost:8848
+访问 Nacos 控制台确认所有服务已注册：<http://localhost:8848>
 
 API 测试：
 
@@ -416,17 +428,17 @@ curl -H "Authorization: Bearer $TOKEN" \
 
 各服务通过环境变量配置中间件连接地址，默认值指向本地：
 
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| NACOS_ADDR | localhost:8848 | Nacos 地址 |
-| MYSQL_ADDR | localhost:3306 | MySQL 地址 |
-| MYSQL_USER | root | MySQL 用户名 |
-| MYSQL_PASSWORD | root123 | MySQL 密码 |
-| REDIS_ADDR | localhost | Redis 地址 |
-| REDIS_PORT | 6379 | Redis 端口 |
-| REDIS_PASSWORD | redis123 | Redis 密码 |
-| KAFKA_ADDR | localhost:9092 | Kafka 地址 |
-| SENTINEL_ADDR | localhost:8858 | Sentinel 地址 |
+|变量|默认值|说明|
+|---|---|---|
+|NACOS_ADDR|localhost:8848|Nacos 地址|
+|MYSQL_ADDR|localhost:3306|MySQL 地址|
+|MYSQL_USER|root|MySQL 用户名|
+|MYSQL_PASSWORD|root123|MySQL 密码|
+|REDIS_ADDR|localhost|Redis 地址|
+|REDIS_PORT|6379|Redis 端口|
+|REDIS_PASSWORD|redis123|Redis 密码|
+|KAFKA_ADDR|localhost:9092|Kafka 地址|
+|SENTINEL_ADDR|localhost:8858|Sentinel 地址|
 
 生产环境可通过 `-e` 或 `export` 覆盖。
 
