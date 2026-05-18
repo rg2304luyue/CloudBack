@@ -12,7 +12,7 @@ import org.springframework.cloud.client.discovery.EnableDiscoveryClient;
  * @author CloudBack
  * @since 2025-05-17
  */
-@MapperScan("org.cloudback.common.mapper")
+@MapperScan({"org.cloudback.common.mapper", "org.cloudback.user.mapper"})
 @EnableDiscoveryClient
 @SpringBootApplication
 public class UserApplication {

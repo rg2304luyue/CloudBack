@@ -6,41 +6,68 @@ import org.springframework.boot.env.EnvironmentPostProcessor;
 import org.springframework.core.env.ConfigurableEnvironment;
 import org.springframework.core.env.MapPropertySource;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/**
- * 自动加载项目根目录的 .env 文件到 Spring Environment。
- * 查找顺序：当前工作目录 → 向上遍历父目录。
- * 支持 ${KEY} 变量引用展开。
- */
 public class DotenvEnvironmentPostProcessor implements EnvironmentPostProcessor {
 
     private static final Pattern VAR_PATTERN = Pattern.compile("\\$\\{(.+?)}");
 
     @Override
     public void postProcessEnvironment(ConfigurableEnvironment environment, SpringApplication application) {
-        Dotenv dotenv = Dotenv.configure()
-                .ignoreIfMissing()
-                .load();
+        try {
+            Path envFile = findEnvFile();
+            if (envFile == null) {
+                System.err.println("[dotenv] .env not found, wd=" + System.getProperty("user.dir"));
+                return;
+            }
+            System.err.println("[dotenv] Loading " + envFile);
 
-        if (dotenv.entries().isEmpty()) {
-            return;
+            Dotenv dotenv = Dotenv.configure()
+                    .directory(envFile.getParent().toString())
+                    .ignoreIfMissing()
+                    .load();
+
+            if (dotenv.entries().isEmpty()) {
+                System.err.println("[dotenv] Empty entries");
+                return;
+            }
+
+            Map<String, String> raw = new HashMap<>();
+            dotenv.entries().forEach(e -> raw.put(e.getKey(), e.getValue()));
+
+            Map<String, Object> resolved = new HashMap<>();
+            for (var entry : raw.entrySet()) {
+                resolved.put(entry.getKey(), resolve(entry.getValue(), raw));
+            }
+
+            environment.getPropertySources()
+                    .addLast(new MapPropertySource("dotenv", resolved));
+
+            System.err.println("[dotenv] Registered " + resolved.size() + " entries, VM_HOST=" + resolved.get("VM_HOST"));
+        } catch (Exception e) {
+            System.err.println("[dotenv] Error: " + e.getMessage());
+            e.printStackTrace();
         }
+    }
 
-        Map<String, String> raw = new HashMap<>();
-        dotenv.entries().forEach(e -> raw.put(e.getKey(), e.getValue()));
-
-        Map<String, Object> resolved = new HashMap<>();
-        for (var entry : raw.entrySet()) {
-            resolved.put(entry.getKey(), resolve(entry.getValue(), raw));
+    private Path findEnvFile() {
+        Path dir = Paths.get(System.getProperty("user.dir"));
+        for (int i = 0; i < 5; i++) {
+            Path candidate = dir.resolve(".env");
+            if (Files.exists(candidate)) {
+                return candidate;
+            }
+            Path parent = dir.getParent();
+            if (parent == null) break;
+            dir = parent;
         }
-
-        // 添加到最末尾（低优先级），不覆盖已有的系统环境变量和命令行参数
-        environment.getPropertySources()
-                .addLast(new MapPropertySource("dotenv", resolved));
+        return null;
     }
 
     private String resolve(String value, Map<String, String> vars) {

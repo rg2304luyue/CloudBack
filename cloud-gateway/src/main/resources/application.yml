@@ -14,6 +14,7 @@ spring:
       config:
         server-addr: ${NACOS_ADDR:${VM_HOST:localhost}:8848}
         file-extension: yml
+        import-check.enabled: false
     sentinel:
       transport:
         dashboard: ${SENTINEL_ADDR:${VM_HOST:localhost}:8858}
@@ -24,42 +25,36 @@ spring:
           enabled: true
           lower-case-service-id: true
       routes:
-        # 认证服务
         - id: cloud-auth
           uri: lb://cloud-auth
           predicates:
             - Path=/api/auth/**
           filters:
             - StripPrefix=1
-        # 用户服务
         - id: cloud-user
           uri: lb://cloud-user
           predicates:
             - Path=/api/user/**
           filters:
             - StripPrefix=1
-        # 商品服务
         - id: cloud-product
           uri: lb://cloud-product
           predicates:
             - Path=/api/product/**
           filters:
             - StripPrefix=1
-        # 购物车服务
         - id: cloud-cart
           uri: lb://cloud-cart
           predicates:
             - Path=/api/cart/**
           filters:
             - StripPrefix=1
-        # 订单服务
         - id: cloud-order
           uri: lb://cloud-order
           predicates:
             - Path=/api/order/**
           filters:
             - StripPrefix=1
-        # 支付服务
         - id: cloud-payment
           uri: lb://cloud-payment
           predicates:

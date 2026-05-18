@@ -18,6 +18,7 @@ spring:
       config:
         server-addr: ${NACOS_ADDR:${VM_HOST:localhost}:8848}
         file-extension: yml
+        import-check.enabled: false
     sentinel:
       transport:
         dashboard: ${SENTINEL_ADDR:${VM_HOST:localhost}:8858}
