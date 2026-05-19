@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS `user` (
     `email`         VARCHAR(100) DEFAULT NULL COMMENT '邮箱',
     `avatar`        VARCHAR(255) DEFAULT NULL COMMENT '头像URL',
     `status`        TINYINT      DEFAULT 1 COMMENT '状态: 0-禁用 1-正常',
+    `role`          VARCHAR(20)  NOT NULL DEFAULT 'BUYER' COMMENT '角色: BUYER-买家, SELLER-卖家, ADMIN-管理员',
     `create_time`   DATETIME     DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `update_time`   DATETIME     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     `deleted`       TINYINT      DEFAULT 0 COMMENT '逻辑删除: 0-未删除 1-已删除',
@@ -75,12 +76,14 @@ CREATE TABLE IF NOT EXISTS `product` (
     `main_image`    VARCHAR(255)  DEFAULT NULL COMMENT '主图URL',
     `images`        JSON          DEFAULT NULL COMMENT '图片列表(JSON数组)',
     `status`        TINYINT       DEFAULT 1 COMMENT '状态: 0-下架 1-上架',
+    `seller_id`     BIGINT        DEFAULT NULL COMMENT '卖家用户ID',
     `create_time`   DATETIME      DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `update_time`   DATETIME      DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     `deleted`       TINYINT       DEFAULT 0 COMMENT '逻辑删除',
     PRIMARY KEY (`id`),
     KEY `idx_category_id` (`category_id`),
-    KEY `idx_status` (`status`)
+    KEY `idx_status` (`status`),
+    KEY `idx_seller_id` (`seller_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='商品表';
 
 -- ==================== 订单表 ====================
@@ -140,3 +143,19 @@ CREATE TABLE IF NOT EXISTS `payment` (
     KEY `idx_order_no` (`order_no`),
     KEY `idx_user_id` (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='支付记录表';
+
+ALTER TABLE cloud_mall.`user` ADD COLUMN `role` VARCHAR(20) NOT NULL DEFAULT 'BUYER' COMMENT '角色';
+ALTER TABLE cloud_mall.`product` ADD COLUMN `seller_id` BIGINT DEFAULT NULL COMMENT '卖家用户ID';
+CREATE INDEX idx_seller_id ON cloud_mall.`product` (`seller_id`);
+
+-- ALTER 兼容已创建的表，新环境执行下面的 CREATE
+-- CREATE TABLE IF NOT EXISTS `seller_application` (
+--     `id`            BIGINT       NOT NULL COMMENT '主键',
+--     `user_id`       BIGINT       NOT NULL COMMENT '申请人ID',
+--     `status`        VARCHAR(20)  NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING/APPROVED/REJECTED',
+--     `create_time`   DATETIME     DEFAULT CURRENT_TIMESTAMP,
+--     `update_time`   DATETIME     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+--     `deleted`       TINYINT      DEFAULT 0 COMMENT '逻辑删除',
+--     PRIMARY KEY (`id`),
+--     KEY `idx_user_id` (`user_id`)
+-- ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='卖家申请表';

@@ -43,6 +43,7 @@ public class AuthServiceImpl implements AuthService {
         user.setPassword(BCrypt.hashpw(password));
         user.setNickname(nickname != null ? nickname : username);
         user.setStatus(SystemConstants.USER_STATUS_NORMAL);
+        user.setRole(SystemConstants.ROLE_BUYER);
 
         userMapper.insert(user);
         log.info("用户注册成功: username={}", username);
@@ -66,7 +67,9 @@ public class AuthServiceImpl implements AuthService {
             throw new BusinessException("账号已被禁用");
         }
 
-        String token = JwtUtil.createToken(user.getId(), user.getUsername());
+        String role = user.getRole() != null ? user.getRole() : SystemConstants.ROLE_BUYER;
+        String token = JwtUtil.createToken(user.getId(), user.getUsername(),
+                java.util.Map.of("role", role));
         log.info("用户登录成功: username={}", username);
         return R.ok("登录成功", token);
     }

@@ -42,6 +42,13 @@ public enum ResultCode {
     /** 库存不足 */
     STOCK_INSUFFICIENT(2002, "库存不足"),
 
+    /** 仅卖家可操作 */
+    SELLER_ONLY(1006, "仅卖家可执行此操作"),
+    /** 仅管理员可操作 */
+    ADMIN_ONLY(1007, "仅管理员可执行此操作"),
+    /** 只能操作自己的商品 */
+    NOT_YOUR_PRODUCT(1008, "只能操作自己的商品"),
+
     /** 订单不存在 */
     ORDER_NOT_EXIST(3001, "订单不存在"),
     /** 订单状态异常 */

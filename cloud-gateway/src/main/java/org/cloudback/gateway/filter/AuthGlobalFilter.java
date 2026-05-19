@@ -57,6 +57,8 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
         token = token.substring(SystemConstants.TOKEN_PREFIX.length());
         Long userId = JwtUtil.getUserId(token);
         String username = JwtUtil.getUsername(token);
+        String role = JwtUtil.getRole(token);
+        if (role == null) role = SystemConstants.ROLE_BUYER;
 
         if (userId == null || JwtUtil.isTokenExpired(token)) {
             return unauthorized(exchange, "Token已过期，请重新登录");
@@ -65,6 +67,7 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
         ServerHttpRequest request = exchange.getRequest().mutate()
                 .header("X-User-Id", String.valueOf(userId))
                 .header("X-Username", username)
+                .header(SystemConstants.USER_ROLE_HEADER, role)
                 .build();
 
         return chain.filter(exchange.mutate().request(request).build());

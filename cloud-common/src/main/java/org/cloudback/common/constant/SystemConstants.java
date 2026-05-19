@@ -25,6 +25,16 @@ public interface SystemConstants {
     /** 用户状态: 禁用 */
     Integer USER_STATUS_DISABLED = 0;
 
+    /** 角色: 买家 */
+    String ROLE_BUYER = "BUYER";
+    /** 角色: 卖家 */
+    String ROLE_SELLER = "SELLER";
+    /** 角色: 管理员 */
+    String ROLE_ADMIN = "ADMIN";
+
+    /** Gateway 注入的用户角色请求头 */
+    String USER_ROLE_HEADER = "X-User-Role";
+
     /** 订单状态: 待支付 */
     Integer ORDER_STATUS_UNPAID = 0;
     /** 订单状态: 已支付 */

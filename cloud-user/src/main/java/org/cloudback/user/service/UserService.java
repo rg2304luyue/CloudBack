@@ -3,6 +3,7 @@ package org.cloudback.user.service;
 import org.cloudback.common.entity.User;
 import org.cloudback.common.result.R;
 import org.cloudback.user.model.entity.Address;
+import org.cloudback.user.model.entity.SellerApplication;
 import java.util.List;
 
 /**
@@ -33,4 +34,19 @@ public interface UserService {
 
     /** 删除收货地址 */
     R<String> deleteAddress(Long userId, Long addressId);
+
+    /** 管理员：获取所有用户列表（密码脱敏） */
+    R<List<User>> getUserList(String role);
+
+    /** 管理员：重置指定用户密码 */
+    R<String> resetPassword(String role, Long targetUserId, String newPassword);
+
+    /** 买家申请成为卖家 */
+    R<String> applySeller(Long userId);
+
+    /** 管理员：查看卖家申请列表 */
+    R<List<SellerApplication>> getApplications(String role);
+
+    /** 管理员：审批卖家申请 */
+    R<String> processApplication(String role, Long applicationId, boolean approved);
 }

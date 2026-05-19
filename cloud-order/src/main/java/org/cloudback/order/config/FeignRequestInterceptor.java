@@ -9,7 +9,7 @@ import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
 
 /**
- * Feign 请求拦截器，将当前 HTTP 请求中的 X-User-Id、X-Username 透传到 Feign 调用。
+ * Feign 请求拦截器，将当前 HTTP 请求中的 X-User-Id、X-Username、X-User-Role 透传到 Feign 调用。
  * 确保调用 cart、product、user 服务时用户上下文不丢失。
  *
  * @author CloudBack
@@ -33,6 +33,10 @@ public class FeignRequestInterceptor {
                 }
                 if (username != null) {
                     template.header("X-Username", username);
+                }
+                String role = request.getHeader("X-User-Role");
+                if (role != null) {
+                    template.header("X-User-Role", role);
                 }
             }
         };

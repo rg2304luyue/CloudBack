@@ -17,13 +17,13 @@ public interface ProductService {
     R<List<Category>> getCategoryTree();
 
     /** 添加分类 */
-    R<String> addCategory(Category category);
+    R<String> addCategory(Long userId, String role, Category category);
 
     /** 修改分类 */
-    R<String> updateCategory(Category category);
+    R<String> updateCategory(Long userId, String role, Category category);
 
     /** 删除分类（有子分类时不允许删除） */
-    R<String> deleteCategory(Long id);
+    R<String> deleteCategory(Long userId, String role, Long id);
 
     /** 获取商品详情 */
     R<Product> getProductDetail(Long productId);
@@ -31,14 +31,17 @@ public interface ProductService {
     /** 分页查询商品列表，支持分类和关键词筛选 */
     R<List<Product>> getProductList(Long categoryId, Integer page, Integer size, String keyword);
 
+    /** 卖家查看自己的商品列表 */
+    R<List<Product>> getMyProducts(Long userId, Integer page, Integer size);
+
     /** 添加商品 */
-    R<String> addProduct(Product product);
+    R<String> addProduct(Long userId, String role, Product product);
 
     /** 修改商品 */
-    R<String> updateProduct(Product product);
+    R<String> updateProduct(Long userId, String role, Product product);
 
     /** 删除商品（逻辑删除） */
-    R<String> deleteProduct(Long id);
+    R<String> deleteProduct(Long userId, String role, Long id);
 
     /** 扣减库存，同时增加销量，带事务保护 */
     R<String> deductStock(Long productId, Integer quantity);

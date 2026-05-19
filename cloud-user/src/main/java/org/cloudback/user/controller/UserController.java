@@ -4,6 +4,7 @@ import lombok.RequiredArgsConstructor;
 import org.cloudback.common.entity.User;
 import org.cloudback.common.result.R;
 import org.cloudback.user.model.entity.Address;
+import org.cloudback.user.model.entity.SellerApplication;
 import org.cloudback.user.service.UserService;
 import org.springframework.web.bind.annotation.*;
 
@@ -71,5 +72,39 @@ public class UserController {
     public R<String> deleteAddress(@RequestHeader("X-User-Id") Long userId,
                                    @PathVariable Long addressId) {
         return userService.deleteAddress(userId, addressId);
+    }
+
+    /** 管理员：获取所有用户列表 */
+    @GetMapping("/admin/list")
+    public R<List<User>> getUserList(@RequestHeader("X-User-Role") String role) {
+        return userService.getUserList(role);
+    }
+
+    /** 买家申请成为卖家 */
+    @PostMapping("/apply-seller")
+    public R<String> applySeller(@RequestHeader("X-User-Id") Long userId) {
+        return userService.applySeller(userId);
+    }
+
+    /** 管理员：查看待审批的卖家申请 */
+    @GetMapping("/admin/applications")
+    public R<List<SellerApplication>> getApplications(@RequestHeader("X-User-Role") String role) {
+        return userService.getApplications(role);
+    }
+
+    /** 管理员：审批卖家申请 */
+    @PutMapping("/admin/applications/{id}")
+    public R<String> processApplication(@RequestHeader("X-User-Role") String role,
+                                        @PathVariable Long id,
+                                        @RequestParam boolean approved) {
+        return userService.processApplication(role, id, approved);
+    }
+
+    /** 管理员：重置用户密码 */
+    @PutMapping("/admin/reset-password")
+    public R<String> resetPassword(@RequestHeader("X-User-Role") String role,
+                                   @RequestParam Long targetUserId,
+                                   @RequestParam String newPassword) {
+        return userService.resetPassword(role, targetUserId, newPassword);
     }
 }

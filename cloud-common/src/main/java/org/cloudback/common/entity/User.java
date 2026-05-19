@@ -30,4 +30,6 @@ public class User extends BaseEntity {
     private String avatar;
     /** 状态: 0-禁用, 1-正常 */
     private Integer status;
+    /** 角色: BUYER-买家, SELLER-卖家, ADMIN-管理员 */
+    private String role;
 }

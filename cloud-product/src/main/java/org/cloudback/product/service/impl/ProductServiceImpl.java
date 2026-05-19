@@ -3,6 +3,7 @@ package org.cloudback.product.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
+import org.cloudback.common.constant.SystemConstants;
 import org.cloudback.common.exception.BusinessException;
 import org.cloudback.common.result.R;
 import org.cloudback.common.result.ResultCode;
@@ -62,13 +63,15 @@ public class ProductServiceImpl implements ProductService {
     }
 
     @Override
-    public R<String> addCategory(Category category) {
+    public R<String> addCategory(Long userId, String role, Category category) {
+        checkProductManagePermission(role);
         categoryMapper.insert(category);
         return R.ok("添加分类成功");
     }
 
     @Override
-    public R<String> updateCategory(Category category) {
+    public R<String> updateCategory(Long userId, String role, Category category) {
+        checkProductManagePermission(role);
         Category dbCategory = categoryMapper.selectById(category.getId());
         if (dbCategory == null) {
             throw new BusinessException(ResultCode.NOT_FOUND.getCode(), "分类不存在");
@@ -78,7 +81,8 @@ public class ProductServiceImpl implements ProductService {
     }
 
     @Override
-    public R<String> deleteCategory(Long id) {
+    public R<String> deleteCategory(Long userId, String role, Long id) {
+        checkProductManagePermission(role);
         Long childCount = categoryMapper.selectCount(
                 new LambdaQueryWrapper<Category>().eq(Category::getParentId, id));
         if (childCount > 0) {
@@ -121,7 +125,19 @@ public class ProductServiceImpl implements ProductService {
     }
 
     @Override
-    public R<String> addProduct(Product product) {
+    public R<List<Product>> getMyProducts(Long userId, Integer page, Integer size) {
+        LambdaQueryWrapper<Product> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(Product::getSellerId, userId);
+        wrapper.orderByDesc(Product::getCreateTime);
+        Page<Product> productPage = new Page<>(page, size);
+        productMapper.selectPage(productPage, wrapper);
+        return R.ok(productPage.getRecords());
+    }
+
+    @Override
+    public R<String> addProduct(Long userId, String role, Product product) {
+        checkProductManagePermission(role);
+        product.setSellerId(userId);
         product.setSales(0);
         product.setStatus(1);
         productMapper.insert(product);
@@ -129,19 +145,42 @@ public class ProductServiceImpl implements ProductService {
     }
 
     @Override
-    public R<String> updateProduct(Product product) {
+    public R<String> updateProduct(Long userId, String role, Product product) {
+        checkProductManagePermission(role);
         Product dbProduct = productMapper.selectById(product.getId());
         if (dbProduct == null) {
             throw new BusinessException(ResultCode.PRODUCT_NOT_EXIST);
         }
+        checkProductPermission(userId, role, dbProduct);
+        product.setSellerId(dbProduct.getSellerId()); // 不允许修改卖家
         productMapper.updateById(product);
         return R.ok("更新商品成功");
     }
 
     @Override
-    public R<String> deleteProduct(Long id) {
+    public R<String> deleteProduct(Long userId, String role, Long id) {
+        checkProductManagePermission(role);
+        Product dbProduct = productMapper.selectById(id);
+        if (dbProduct == null) {
+            throw new BusinessException(ResultCode.PRODUCT_NOT_EXIST);
+        }
+        checkProductPermission(userId, role, dbProduct);
         productMapper.deleteById(id);
         return R.ok("删除商品成功");
+    }
+
+    // ==================== 权限校验 ====================
+
+    private void checkProductManagePermission(String role) {
+        if (!SystemConstants.ROLE_SELLER.equals(role) && !SystemConstants.ROLE_ADMIN.equals(role)) {
+            throw new BusinessException(ResultCode.SELLER_ONLY);
+        }
+    }
+
+    private void checkProductPermission(Long userId, String role, Product product) {
+        if (SystemConstants.ROLE_ADMIN.equals(role)) return;
+        if (product.getSellerId() != null && product.getSellerId().equals(userId)) return;
+        throw new BusinessException(ResultCode.NOT_YOUR_PRODUCT);
     }
 
     // ==================== 库存 ====================

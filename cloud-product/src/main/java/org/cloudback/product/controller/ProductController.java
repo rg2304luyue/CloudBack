@@ -31,20 +31,26 @@ public class ProductController {
 
     /** 添加分类 */
     @PostMapping("/category")
-    public R<String> addCategory(@RequestBody Category category) {
-        return productService.addCategory(category);
+    public R<String> addCategory(@RequestHeader("X-User-Id") Long userId,
+                                 @RequestHeader("X-User-Role") String role,
+                                 @RequestBody Category category) {
+        return productService.addCategory(userId, role, category);
     }
 
     /** 修改分类 */
     @PutMapping("/category")
-    public R<String> updateCategory(@RequestBody Category category) {
-        return productService.updateCategory(category);
+    public R<String> updateCategory(@RequestHeader("X-User-Id") Long userId,
+                                    @RequestHeader("X-User-Role") String role,
+                                    @RequestBody Category category) {
+        return productService.updateCategory(userId, role, category);
     }
 
     /** 删除分类 */
     @DeleteMapping("/category/{id}")
-    public R<String> deleteCategory(@PathVariable Long id) {
-        return productService.deleteCategory(id);
+    public R<String> deleteCategory(@RequestHeader("X-User-Id") Long userId,
+                                    @RequestHeader("X-User-Role") String role,
+                                    @PathVariable Long id) {
+        return productService.deleteCategory(userId, role, id);
     }
 
     /** 获取商品详情 */
@@ -62,22 +68,36 @@ public class ProductController {
         return productService.getProductList(categoryId, page, size, keyword);
     }
 
+    /** 卖家查看自己的商品 */
+    @GetMapping("/my-list")
+    public R<List<Product>> getMyProducts(@RequestHeader("X-User-Id") Long userId,
+                                          @RequestParam(defaultValue = "1") Integer page,
+                                          @RequestParam(defaultValue = "20") Integer size) {
+        return productService.getMyProducts(userId, page, size);
+    }
+
     /** 添加商品 */
     @PostMapping
-    public R<String> addProduct(@RequestBody Product product) {
-        return productService.addProduct(product);
+    public R<String> addProduct(@RequestHeader("X-User-Id") Long userId,
+                                @RequestHeader("X-User-Role") String role,
+                                @RequestBody Product product) {
+        return productService.addProduct(userId, role, product);
     }
 
     /** 修改商品 */
     @PutMapping
-    public R<String> updateProduct(@RequestBody Product product) {
-        return productService.updateProduct(product);
+    public R<String> updateProduct(@RequestHeader("X-User-Id") Long userId,
+                                   @RequestHeader("X-User-Role") String role,
+                                   @RequestBody Product product) {
+        return productService.updateProduct(userId, role, product);
     }
 
     /** 删除商品 */
     @DeleteMapping("/{id}")
-    public R<String> deleteProduct(@PathVariable Long id) {
-        return productService.deleteProduct(id);
+    public R<String> deleteProduct(@RequestHeader("X-User-Id") Long userId,
+                                   @RequestHeader("X-User-Role") String role,
+                                   @PathVariable Long id) {
+        return productService.deleteProduct(userId, role, id);
     }
 
     /** 扣减库存（供订单服务 Feign 内部调用） */

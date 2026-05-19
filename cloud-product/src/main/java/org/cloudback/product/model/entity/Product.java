@@ -36,4 +36,6 @@ public class Product extends BaseEntity {
     private String images;
     /** 状态: 0-下架, 1-上架 */
     private Integer status;
+    /** 卖家用户 ID */
+    private Long sellerId;
 }

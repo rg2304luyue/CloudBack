@@ -79,6 +79,13 @@ public class JwtUtil {
         return claims.get("username", String.class);
     }
 
+    /** 从 Token 中提取用户角色 */
+    public static String getRole(String token) {
+        Claims claims = parseToken(token);
+        if (claims == null) return null;
+        return claims.get("role", String.class);
+    }
+
     /** 判断 Token 是否已过期 */
     public static boolean isTokenExpired(String token) {
         Claims claims = parseToken(token);
