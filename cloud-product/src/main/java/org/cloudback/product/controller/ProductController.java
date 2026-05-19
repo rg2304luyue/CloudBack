@@ -106,4 +106,18 @@ public class ProductController {
                                  @RequestParam Integer quantity) {
         return productService.deductStock(id, quantity);
     }
+
+    /** 管理员：获取待审核商品 */
+    @GetMapping("/admin/pending")
+    public R<List<Product>> getPendingProducts(@RequestParam(defaultValue = "1") Long page,
+                                               @RequestParam(defaultValue = "20") Long size) {
+        return productService.getPendingProducts(page, size);
+    }
+
+    /** 管理员：审核商品 */
+    @PutMapping("/admin/review/{id}")
+    public R<String> reviewProduct(@PathVariable Long id,
+                                   @RequestParam boolean approved) {
+        return productService.reviewProduct(id, approved);
+    }
 }

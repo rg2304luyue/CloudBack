@@ -35,6 +35,9 @@ public interface SystemConstants {
     /** Gateway 注入的用户角色请求头 */
     String USER_ROLE_HEADER = "X-User-Role";
 
+    /** 商品状态: 待审核 */
+    Integer PRODUCT_STATUS_PENDING = 2;
+
     /** 订单状态: 待支付 */
     Integer ORDER_STATUS_UNPAID = 0;
     /** 订单状态: 已支付 */

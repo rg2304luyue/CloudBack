@@ -45,4 +45,10 @@ public interface ProductService {
 
     /** 扣减库存，同时增加销量，带事务保护 */
     R<String> deductStock(Long productId, Integer quantity);
+
+    /** 管理员：获取待审核商品列表 */
+    R<List<Product>> getPendingProducts(Long page, Long size);
+
+    /** 管理员：审核商品（通过/拒绝） */
+    R<String> reviewProduct(Long id, boolean approved);
 }

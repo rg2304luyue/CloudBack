@@ -1,6 +1,6 @@
 # CloudBack 微服务电商系统
 
-基于 Spring Cloud Alibaba 全家桶构建的电商微服务系统，8 个微服务模块协同工作。
+Spring Cloud Alibaba 微服务架构，8 个模块，三种角色（买家/卖家/管理员）。
 
 ## 技术栈
 
@@ -10,322 +10,173 @@
 |框架|Spring Boot|3.3.9|
 |微服务|Spring Cloud|2023.0.3|
 |微服务|Spring Cloud Alibaba|2023.0.1.0|
-|注册 & 配置中心|Nacos|2.5.x (Docker)|
+|注册配置中心|Nacos|2.5.x (Docker)|
 |API 网关|Spring Cloud Gateway|—|
-|安全认证|JWT (jjwt 0.12.6)|—|
+|认证|JWT (jjwt 0.12.6)|—|
 |ORM|MyBatis-Plus|3.5.11|
 |连接池|Druid|1.2.24|
 |缓存|Redis|7.x (宿主机)|
 |消息队列|Kafka|3.9.x (Docker)|
 |熔断限流|Sentinel|1.8.x (Docker)|
 |远程调用|OpenFeign|—|
-|工具库|Hutool|5.8.x|
-|JSON|Fastjson2|2.0.x|
+|对象存储|MinIO|latest (Docker)|
 
 ## 项目结构
 
 ```text
 CloudBack/
-├── pom.xml                              # 父 POM，统一依赖版本管理
-├── .env                                 # 中间件连接配置（gitignored）
-├── .env.example                         # .env 模板
-├── cloud-common/                        # 公共模块
-│   └── src/main/java/org/cloudback/common/
-│       ├── result/          R.java, ResultCode.java        # 统一响应体
-│       ├── entity/          BaseEntity.java, User.java     # 公共实体
-│       ├── mapper/          UserMapper.java               # 公共 Mapper
-│       ├── exception/       BusinessException.java        # 业务异常
-│       │                    GlobalExceptionHandler.java    # 全局异常处理
-│       ├── constant/        SystemConstants.java          # 系统常量
-│       ├── utils/           JwtUtil.java                  # JWT 工具
-│       └── config/          DotenvEnvironmentPostProcessor.java  # .env 加载器
-│                            MyBatisPlusConfig.java        # MyBatis 配置
-│                            RedisConfig.java              # Redis 配置
-│                            AutoFillMetaObjectHandler.java # 字段自动填充
-├── cloud-gateway/   :8080   # API 网关 (WebFlux)
-├── cloud-auth/      :8081   # 认证服务
-├── cloud-product/   :8082   # 商品服务
-├── cloud-user/      :8083   # 用户服务
-├── cloud-cart/      :8084   # 购物车服务 (Redis Hash)
-├── cloud-order/     :8085   # 订单服务 (Kafka 生产者)
-├── cloud-payment/   :8086   # 支付服务 (Kafka 消费者)
-├── sql/
-│   └── init.sql                        # 数据库初始化脚本 (7 张业务表)
-└── docker/
-    ├── docker-compose.yml              # Nacos / Kafka / Sentinel 编排
-    ├── .env                             # Docker Compose 环境变量
-    └── nacos/conf/
-        └── application.properties      # Nacos 配置
+├── pom.xml                      # 父 POM
+├── .env / .env.example           # 环境变量（Spring Boot 启动时自动加载）
+├── start-all.bat                 # Windows 一键启动脚本
+├── cloud-common/                 # 公共模块：实体、工具、配置、异常
+├── cloud-gateway/  :8080         # API 网关：JWT 认证 + 路由分发
+├── cloud-auth/     :8081         # 认证服务：注册、登录、JWT 签发
+├── cloud-product/  :8082         # 商品服务：分类、商品 CRUD、审核、库存
+├── cloud-user/     :8083         # 用户服务：信息、地址、卖家申请、管理员
+├── cloud-cart/     :8084         # 购物车服务：Redis Hash
+├── cloud-order/    :8085         # 订单服务：下单 + Kafka 生产者
+├── cloud-payment/  :8086         # 支付服务：模拟支付 + Kafka 消费者
+├── sql/init.sql                 # 建库建表脚本
+└── docker/                       # Nacos / Kafka / Sentinel / MinIO 编排
 ```
 
-## 系统架构
+## 角色体系
 
-```text
-                            ┌─────────────┐
-                            │   Browser   │
-                            │  Vue 3 前端  │
-                            └──────┬──────┘
-                                   │ HTTP
-                                   ▼
-                          ┌────────────────┐
-                          │  cloud-gateway │  :8080 (Windows 本机)
-                          │  JWT 认证 + CORS │
-                          └───────┬────────┘
-                                  │ Nacos 服务发现
-                    ┌─────────────┼─────────────┐
-                    │             │             │
-            ┌───────▼──┐  ┌──────▼──┐  ┌──────▼──────┐
-            │  Nacos   │  │ Sentinel│  │  lb://路由   │
-            │ 注册/配置 │  │ 熔断限流 │  │  到各微服务   │
-            └──────────┘  └─────────┘  └──────┬──────┘
-                                              │
-      ┌────────┬────────┬────────┬───────────┬──────────┬─────────┐
-      ▼        ▼        ▼        ▼           ▼          ▼         ▼
-  auth:8081 product  user:8083 cart:8084  order:8085 payment:8086
-              :8082
-      │                  │        │           │          │
-      ▼                  │        ▼           │          │
-   MySQL:3306 ◄──────────┘    Redis:6379      │          │
-  (user/order/product)      (购物车 Hash)      │          │
-                                               ▼          ▼
-                                         ┌──────────────────┐
-                                         │   Kafka :9092    │
-                                         │ order-create ──▶ │
-                                         │ ◀── payment-result│
-                                         └──────────────────┘
-```
+三种角色，通过 `user.role` 字段区分（BUYER / SELLER / ADMIN），JWT 中携带。
 
-## 部署架构（混合模式）
-
-|组件|部署位置|方式|
-|---|---|---|
-|Spring Boot 微服务|Windows 本机|`mvn spring-boot:run`|
-|MySQL 8.0+|Ubuntu 24.04 VM|宿主机直接安装|
-|Redis 7.x|Ubuntu 24.04 VM|宿主机直接安装|
-|Nacos 2.5|VM (Docker)|docker compose|
-|Kafka 3.9|VM (Docker)|docker compose|
-|Sentinel|VM (Docker)|docker compose|
-|Kafka UI|VM (Docker)|docker compose|
-
-通过 `.env` 中的 `VM_HOST=192.168.91.130` 一键切换所有连接目标。
-
-## 快速开始
-
-### 环境要求
-
-- **Windows 本机**：JDK 21、Maven 3.9+
-- **Ubuntu 24.04 VM**：MySQL 8.0+、Redis 7.x、Docker & Docker Compose
-- VM IP 示例：`192.168.91.130`（实际环境请替换）
-
----
-
-### 第一步：虚拟机中间件准备
-
-SSH 登录 Ubuntu 24.04 VM，依次执行。
-
-#### 1.1 MySQL — 开放远程访问并导入数据库
-
-```bash
-# 1. 修改监听地址
-sudo sed -i 's/^bind-address.*/bind-address = 0.0.0.0/' /etc/mysql/mysql.conf.d/mysqld.cnf
-sudo systemctl restart mysql
-
-# 2. 上传 sql/init.sql 并导入（创建 cloud_mall 和 nacos_config 两个库 + 7 张业务表）
-mysql -u root -p < sql/init.sql
-
-# 3. 导入 Nacos 系统表（Nacos 2.x 需要，否则启动闪退）
-#    从 Nacos 官方发行版 nacos/conf/mysql-schema.sql 获取，或：
-mysql -u root -p nacos_config < docker/nacos/conf/mysql-schema.sql
-
-# 4. 开放 root 远程访问（若密码不是 root 请替换）
-mysql -u root -p -e "
-CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED BY 'root';
-GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;
-FLUSH PRIVILEGES;
-"
-
-# 5. 验证
-mysql -u root -p -e "USE cloud_mall; SHOW TABLES;"
-mysql -u root -p -e "USE nacos_config; SHOW TABLES;"
-```
-
-#### 1.2 Redis — 开放远程访问
-
-```bash
-# 修改监听地址和密码
-sudo sed -i 's/^bind 127.0.0.1/bind 0.0.0.0/' /etc/redis/redis.conf
-sudo sed -i 's/^# requirepass .*/requirepass redis/' /etc/redis/redis.conf
-sudo systemctl restart redis-server
-
-# 验证
-redis-cli -a redis ping   # 应返回 PONG
-```
-
-#### 1.3 Docker 中间件
-
-```bash
-# 进入 docker 目录
-cd docker
-
-# 如果 MySQL root 密码不是 root，先编辑 .env
-vim .env    # 改 MYSQL_PASSWORD 为实际密码
-
-# 启动
-docker compose up -d
-
-# 确认容器状态
-docker compose ps
-```
-
-|容器|端口|账号/密码|管理地址|
+|角色|常量|注册方式|核心权限|
 |---|---|---|---|
-|cloud-nacos|8848 / 9848|nacos / nacos|<http://192.168.91.130:8848/nacos>|
-|cloud-kafka|9092|—|—|
-|cloud-kafka-ui|8088|—|<http://192.168.91.130:8088>|
-|cloud-sentinel|8858|admin / admin123|<http://192.168.91.130:8858>|
+|买家|BUYER|公开注册|浏览商品、加入购物车、下单、申请成为卖家|
+|卖家|SELLER|买家申请→管理员审批|管理自己的商品（增删改、提交审核）、管理分类|
+|管理员|ADMIN|手动提升|审批卖家申请+商品审核、重置密码、管理所有用户|
 
-#### 1.4 防火墙
+**JWT 角色流转**：
 
-```bash
-sudo ufw allow 3306,6379,8848,9848,9092,8088,8858/tcp
+```text
+登录 → AuthServiceImpl 签发 JWT（含 role claim）
+  → Gateway AuthGlobalFilter 解析 JWT → 注入 X-User-Id / X-Username / X-User-Role
+  → 下游服务通过 @RequestHeader 读取
 ```
+
+Gateway 白名单外的所有请求强制携带有效 JWT。
 
 ---
 
-### 第二步：Windows 本地开发
+## 业务流程
 
-#### 2.1 配置 .env
+### 1. 注册与登录
 
-```bash
-cp .env.example .env
+```text
+POST /api/auth/register (username, password, nickname)
+  → 默认角色 BUYER → BCrypt 加密 → 入库
+
+POST /api/auth/login (username, password)
+  → 查用户 → BCrypt 验证 → 检查状态 → 签发 JWT（含 userId + username + role）
+  → 前端存 token → fetchUserInfo → 按角色跳转首页
 ```
 
-编辑 `.env`，只需改一行：
+注册/登录在 Gateway 白名单中，无需 Token。
 
-```ini
-VM_HOST=192.168.91.130
+### 2. 买家浏览与购物
+
+```text
+GET  /api/product/list         → 公开，只返回 status=1（审核通过）的商品
+GET  /api/product/detail/{id}  → 公开
+POST /api/cart/add             → 需登录 → Redis HASH cloud:cart:{userId}
+GET  /api/cart/list            → 需登录 → Redis + Feign 查商品信息
+POST /api/order/create         → 需登录 → 完整下单链路（见第 5 节）
 ```
 
-所有中间件地址自动跟随。原理：`application.yml` 中连接地址默认值为 `${VM_HOST:localhost}:端口`，启动时 `DotenvEnvironmentPostProcessor` 自动加载 `.env` 并注入。
+### 3. 申请成为卖家
 
-#### 2.2 编译项目
-
-```bash
-mvn clean install -DskipTests
+```text
+BUYER 登录 → 个人中心 → 点击「申请成为卖家」
+  → POST /api/user/apply-seller → seller_application 表插入 PENDING 记录
+  → ADMIN 登录 → 用户管理页 → 看到待审批列表
+  → 「通过」→ user.role 变为 SELLER + application.status = APPROVED
+  → 「拒绝」→ application.status = REJECTED
 ```
 
-#### 2.3 启动微服务
+已申请的不可重复提交。审批通过后需重新登录获取新 JWT。
 
-分两批启动（Gateway 先于其他服务启动）：
+### 4. 卖家商品管理 + 审核
 
-```bash
-# 第一批：不依赖其他微服务的基础服务
-mvn spring-boot:run -pl cloud-gateway
-mvn spring-boot:run -pl cloud-auth
-mvn spring-boot:run -pl cloud-user
-mvn spring-boot:run -pl cloud-product
+```text
+卖家添加/编辑商品
+  → POST/PUT /api/product
+  → sellerId 自动设为当前用户
+  → SELLER 角色：status 自动设为 2（待审核）
+  → ADMIN  角色：status 直接设为 1（上架）
 
-# 第二批：依赖 Feign 远程调用
-mvn spring-boot:run -pl cloud-cart
-mvn spring-boot:run -pl cloud-order
-mvn spring-boot:run -pl cloud-payment
+管理员审核
+  → GET  /api/product/admin/pending          列出所有 status=2 的商品
+  → PUT  /api/product/admin/review/{id}?approved=true    → 通过 → status=1
+  → PUT  /api/product/admin/review/{id}?approved=false   → 拒绝 → status=0
+
+公开商品列表（首页/商品页）
+  → GET /api/product/list → 只查 status=1 的商品
 ```
 
-> 启动成功标志：Gateway 日志出现 `[dotenv] Loading ...\.env` 和 `serverIp = '192.168.91.130'`。
->
-> 如果在 IDEA 中运行，Run Configuration → Environment variables 添加 `VM_HOST=192.168.91.130`。
+卖家只能操作 `sellerId` 匹配的商品；管理员可操作全部。卖家编辑已上架商品后重新进入待审核。
 
-### 验证
+### 5. 用户下单（完整链路）
 
-1. 访问 Nacos 控制台 <http://192.168.91.130:8848/nacos>，服务列表应有 7 个服务且状态正常
-2. 启动 CloudFront 前端 `npm run dev`，通过页面操作验证完整流程
+```text
+POST /api/order/create
+
+① Feign → CartService.getCheckedItems()          # Redis HASH
+② Feign → UserService.getAddressById()            # MySQL
+③ Feign → ProductService.deductStock() × N        # MySQL @Transactional
+④ INSERT order_info + order_item × N              # MySQL
+⑤ Feign → CartService.clearCart()                 # Redis
+⑥ Kafka.send("order-create")                      # 通知支付服务
+    → cloud-payment 消费 → 模拟支付 → INSERT payment
+    → Kafka.send("payment-result")
+    → cloud-order 消费 → UPDATE order_info SET status=已支付
+```
+
+### 6. 管理员完整功能
+
+|功能|接口|说明|
+|---|---|---|
+|商品审核|`GET /product/admin/pending`|查看所有待审核商品|
+|审批|`PUT /product/admin/review/{id}?approved=true`|通过/拒绝|
+|用户列表|`GET /user/admin/list`|所有用户（密码脱敏）|
+|重置密码|`PUT /user/admin/reset-password`|给任意用户设新密码|
+|卖家申请|`GET /user/admin/applications`|查看待审批|
+|审批申请|`PUT /user/admin/applications/{id}?approved=true`|通过/拒绝|
 
 ---
 
-## 服务调用链路
+## 数据库
 
-### 用户登录
+|表|说明|关键字段|
+|---|---|---|
+|user|用户|username(唯一), password(BCrypt), role(BUYER/SELLER/ADMIN)|
+|address|收货地址|user_id, receiver_name, is_default|
+|category|商品分类|parent_id (树形), name, sort|
+|product|商品|category_id, seller_id, price, stock, status(0/1/2), main_image|
+|seller_application|卖家申请|user_id, status(PENDING/APPROVED/REJECTED)|
+|order_info|订单|order_no(唯一), user_id, status(0待支付~4已取消)|
+|order_item|订单明细|order_id, product_id, quantity, price|
+|payment|支付记录|order_no, trade_no, status|
 
-```text
-POST /api/auth/login (白名单)
-  → Gateway → lb://cloud-auth → AuthController.login()
-    → BCrypt.checkpw() → JwtUtil.createToken()
-  ← { code: 200, data: "<token>" }
-```
-
-### 用户下单
-
-```text
-POST /api/order/create (Header: Authorization: Bearer <token>)
-  │  [Gateway] AuthGlobalFilter 解析 JWT → 注入 X-User-Id
-  │
-  ├─① Feign → CartService.getCheckedItems()      # Redis Hash
-  ├─② Feign → UserService.getAddressById()        # MySQL
-  ├─③ Feign → ProductService.deductStock() × N   # MySQL (扣库存)
-  ├─④ INSERT order_info + order_item              # MySQL (建订单)
-  ├─⑤ Feign → CartService.clearCart()             # Redis (清购物车)
-  └─⑥ Kafka.send("order-create")                  # 通知支付服务
-         │
-         ▼
-  [cloud-payment] 消费 order-create → 模拟支付 → INSERT payment
-         │
-         └─ Kafka.send("payment-result")
-              │
-              ▼
-  [cloud-order] 消费 payment-result → UPDATE order_info SET status=已支付
-```
-
-### 购物车 Redis 结构
+### Redis 购物车
 
 ```text
 Key:   cloud:cart:{userId}
-Type:  Hash
-TTL:   7 天
-
-Field: productId  →  Value: CartItem JSON
-
-示例：
-  cloud:cart:10086
-    ├── 1001 → {"productId":1001, "productName":"iPhone", "price":6999, "quantity":2, "checked":true}
-    └── 2002 → {"productId":2002, "productName":"耳机", "price":299, "quantity":1, "checked":false}
+Type:  Hash, TTL 7 天
+Field: productId → Value: CartItem JSON
 ```
 
-## 数据库设计
-
-|表名|说明|关键字段|
-|---|---|---|
-|user|用户表|username(唯一), password(BCrypt)|
-|address|收货地址|user_id, receiver_name, is_default|
-|category|商品分类|parent_id, name, sort|
-|product|商品表|category_id, price, stock|
-|order_info|订单表|order_no(唯一), status(0-4)|
-|order_item|订单明细|order_id, product_id, quantity|
-|payment|支付记录|order_no, trade_no, status|
-
-所有表使用雪花算法主键 + MyBatis-Plus 逻辑删除 (deleted=0/1)。
-
-## 统一响应格式
-
-```json
-{"code": 200, "message": "操作成功", "data": {...}}
-```
-
-|code|含义|
-|---|---|
-|200|操作成功|
-|401|未登录或 Token 过期|
-|403|无权限|
-|1001|用户名或密码错误|
-|1002|用户不存在|
-|2002|库存不足|
-|3001|订单不存在|
+---
 
 ## 环境变量
 
-通过项目根目录 `.env` 统一管理，支持 `${KEY}` 引用：
+项目根目录 `.env` 文件，支持 `${KEY}` 引用，`VM_HOST` 一键切换：
 
 ```ini
-VM_HOST=192.168.91.130        # 改这一个，下面全跟随
+VM_HOST=192.168.91.130
 MYSQL_ADDR=${VM_HOST}:3306
 REDIS_ADDR=${VM_HOST}
 NACOS_ADDR=${VM_HOST}:8848
@@ -333,46 +184,55 @@ SENTINEL_ADDR=${VM_HOST}:8858
 KAFKA_ADDR=${VM_HOST}:9092
 ```
 
-|变量|默认值|说明|
-|---|---|---|
-|VM_HOST|localhost|一级开关，所有连接的默认地址|
-|MYSQL_USER|root|MySQL 用户名|
-|MYSQL_PASSWORD|root|MySQL 密码|
-|REDIS_PASSWORD|redis|Redis 密码|
+`cloud-common` 内置 dotenv 加载器，启动时自动从工作目录向上查找 `.env` 并注入。
+
+---
+
+## 部署
+
+### 虚拟机（Ubuntu 24.04）
+
+MySQL 8.0 + Redis 7 宿主机安装；Nacos / Kafka / Sentinel / MinIO 通过 Docker 运行。
+
+```bash
+# 初始化数据库
+mysql -u root -p < sql/init.sql
+
+# 开放远程访问与防火墙
+# MySQL: bind-address = 0.0.0.0
+# Redis: bind 0.0.0.0 + requirepass
+sudo ufw allow 3306,6379,8848,9848,9000,9001,9092,8088,8858/tcp
+
+# Docker 中间件
+cd docker && docker compose up -d
+```
+
+### Windows 本地开发
+
+```bash
+cp .env.example .env
+vim .env     # VM_HOST=192.168.91.130
+
+mvn clean install -DskipTests
+mvn spring-boot:run -pl cloud-gateway
+mvn spring-boot:run -pl cloud-auth
+# ... 依次启动 7 个服务，或双击 start-all.bat
+```
+
+---
 
 ## 常见问题
 
-### Gateway 启动报 `serverIp = 'localhost'`
-
-`.env` 没有被加载。检查是否先执行了 `mvn clean install -DskipTests`，确保 `cloud-common` 的改动已打包。
-
-### Nacos gRPC 连接超时（9848 端口）
-
-1. 确认 VM 防火墙已放行 9848：`sudo ufw status`
-2. 确认 Nacos 容器重启后加载了 `nacos.inetutils.ip-address=192.168.91.130` 配置
-3. 确认 docker-compose 端口映射包含 `9848:9848`
-
-### Redis 连接拒绝
-
-Redis 默认只监听 `127.0.0.1`，需改为 `bind 0.0.0.0` 并重启。
-
-### Feign 调用报 `No Feign Client for loadBalancing`
-
-缺少 `spring-cloud-starter-loadbalancer` 依赖。已为 cloud-cart、cloud-order、cloud-product 添加。
-
-### Mapper 扫描不到
-
-各模块的 `@MapperScan` 需包含自己的 mapper 包路径：
-
-```java
-// cloud-user 示例
-@MapperScan({"org.cloudback.common.mapper", "org.cloudback.user.mapper"})
-```
+|现象|原因|解决|
+|---|---|---|
+|Gateway 连 localhost 而非 VM IP|`.env` 未加载|`mvn clean install -DskipTests` 后重启|
+|Nacos 9848 端口连不上|防火墙未放行|`sudo ufw allow 9848/tcp`|
+|Nacos 客户端解析到 localhost|Docker 通告了容器内网 IP|`nacos.inetutils.ip-address=192.168.91.130`|
+|Redis 连接被拒|Redis 只监听 127.0.0.1|改 `bind 0.0.0.0`|
+|审批显示"申请不存在"|JS 精度丢失 Snowflake ID|`JacksonConfig`：Long → String|
+|新增商品报 JSON 错误|`images` 字段为空字符串|改为 `null`|
+|改角色后仍报权限错误|JWT 仍是旧角色|退出重新登录|
 
 ## 安全设计
 
-- **密码加密**：BCrypt 单向哈希
-- **JWT 认证**：Gateway 统一校验，白名单放行 login/register
-- **用户隔离**：Gateway 解析 JWT 后注入 `X-User-Id`，各服务据此过滤数据
-- **密码脱敏**：`getUserInfo` 返回前将 password 字段置 null
-- **逻辑删除**：所有表 deleted=1 替代物理删除
+BCrypt 密码加密 · Gateway 全局 JWT 校验 · X-User-Id 用户隔离 · 密码脱敏 · 逻辑删除 · 雪花 ID

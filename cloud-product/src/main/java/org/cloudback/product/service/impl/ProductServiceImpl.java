@@ -139,9 +139,10 @@ public class ProductServiceImpl implements ProductService {
         checkProductManagePermission(role);
         product.setSellerId(userId);
         product.setSales(0);
-        product.setStatus(1);
+        // 卖家提交需要审核，管理员直接上架
+        product.setStatus(SystemConstants.ROLE_ADMIN.equals(role) ? 1 : SystemConstants.PRODUCT_STATUS_PENDING);
         productMapper.insert(product);
-        return R.ok("添加商品成功");
+        return R.ok(SystemConstants.ROLE_ADMIN.equals(role) ? "添加商品成功" : "添加成功，等待管理员审核");
     }
 
     @Override
@@ -152,9 +153,13 @@ public class ProductServiceImpl implements ProductService {
             throw new BusinessException(ResultCode.PRODUCT_NOT_EXIST);
         }
         checkProductPermission(userId, role, dbProduct);
-        product.setSellerId(dbProduct.getSellerId()); // 不允许修改卖家
+        product.setSellerId(dbProduct.getSellerId());
+        // 卖家修改后重新进入待审核
+        if (SystemConstants.ROLE_SELLER.equals(role)) {
+            product.setStatus(SystemConstants.PRODUCT_STATUS_PENDING);
+        }
         productMapper.updateById(product);
-        return R.ok("更新商品成功");
+        return R.ok(SystemConstants.ROLE_SELLER.equals(role) ? "已重新提交审核" : "更新商品成功");
     }
 
     @Override
@@ -167,6 +172,32 @@ public class ProductServiceImpl implements ProductService {
         checkProductPermission(userId, role, dbProduct);
         productMapper.deleteById(id);
         return R.ok("删除商品成功");
+    }
+
+    // ==================== 审核 ====================
+
+    @Override
+    public R<List<Product>> getPendingProducts(Long page, Long size) {
+        LambdaQueryWrapper<Product> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(Product::getStatus, SystemConstants.PRODUCT_STATUS_PENDING)
+               .orderByAsc(Product::getCreateTime);
+        Page<Product> productPage = new Page<>(page, size);
+        productMapper.selectPage(productPage, wrapper);
+        return R.ok(productPage.getRecords());
+    }
+
+    @Override
+    public R<String> reviewProduct(Long id, boolean approved) {
+        Product product = productMapper.selectById(id);
+        if (product == null) {
+            throw new BusinessException(ResultCode.PRODUCT_NOT_EXIST);
+        }
+        if (!SystemConstants.PRODUCT_STATUS_PENDING.equals(product.getStatus())) {
+            return R.fail("该商品无需审核或已处理");
+        }
+        product.setStatus(approved ? 1 : 0);
+        productMapper.updateById(product);
+        return R.ok(approved ? "审核通过" : "已拒绝，商品已下架");
     }
 
     // ==================== 权限校验 ====================

@@ -78,9 +78,26 @@ services:
     networks:
       - cloud-net
 
+  minio:
+    image: minio/minio:latest
+    container_name: cloud-minio
+    restart: always
+    ports:
+      - "9000:9000"   # API
+      - "9001:9001"   # Web 控制台
+    environment:
+      MINIO_ROOT_USER: ${MINIO_USER:-admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD:-admin123456}
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    networks:
+      - cloud-net
+
 volumes:
   nacos-data:
   kafka-data:
+  minio-data:
 
 networks:
   cloud-net:
