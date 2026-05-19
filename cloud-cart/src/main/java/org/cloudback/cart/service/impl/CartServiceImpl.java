@@ -50,6 +50,7 @@ public class CartServiceImpl implements CartService {
         if (result.getCode() != 200 || result.getData() == null) {
             throw new BusinessException(ResultCode.PRODUCT_NOT_EXIST);
         }
+        CartItem productInfo = result.getData();
 
         String key = cartKey(userId);
         String field = String.valueOf(productId);
@@ -59,13 +60,16 @@ public class CartServiceImpl implements CartService {
             CartItem cartItem = JSON.parseObject(existing.toString(), CartItem.class);
             cartItem.setQuantity(cartItem.getQuantity() + quantity);
             cartItem.setChecked(true);
+            cartItem.setName(productInfo.getName());
+            cartItem.setMainImage(productInfo.getMainImage());
+            cartItem.setPrice(productInfo.getPrice());
             redisTemplate.opsForHash().put(key, field, JSON.toJSONString(cartItem));
         } else {
             CartItem cartItem = new CartItem();
             cartItem.setProductId(productId);
-            cartItem.setProductName(result.getData().getProductName());
-            cartItem.setProductImage(result.getData().getProductImage());
-            cartItem.setPrice(result.getData().getPrice());
+            cartItem.setName(productInfo.getName());
+            cartItem.setMainImage(productInfo.getMainImage());
+            cartItem.setPrice(productInfo.getPrice());
             cartItem.setQuantity(quantity);
             cartItem.setChecked(true);
             redisTemplate.opsForHash().put(key, field, JSON.toJSONString(cartItem));

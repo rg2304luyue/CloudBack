@@ -44,6 +44,14 @@ public class PaymentServiceImpl implements PaymentService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public R<String> processPayment(String orderNo, Long userId, BigDecimal amount) {
+        // 幂等：已支付过的订单不重复创建
+        Long existCount = paymentMapper.selectCount(
+                new LambdaQueryWrapper<Payment>().eq(Payment::getOrderNo, orderNo));
+        if (existCount > 0) {
+            log.warn("支付记录已存在，跳过: orderNo={}", orderNo);
+            return R.ok("已支付");
+        }
+
         String tradeNo = IdUtil.getSnowflakeNextIdStr();
 
         Payment payment = new Payment();

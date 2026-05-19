@@ -7,10 +7,14 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.cloudback.common.constant.SystemConstants;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.cloudback.common.exception.BusinessException;
 import org.cloudback.common.result.R;
 import org.cloudback.common.result.ResultCode;
 import org.cloudback.order.feign.CartFeignClient;
+import org.cloudback.order.feign.CartItemDTO;
+import org.cloudback.order.feign.ProductDTO;
 import org.cloudback.order.feign.ProductFeignClient;
 import org.cloudback.order.feign.UserFeignClient;
 import org.cloudback.order.mapper.OrderItemMapper;
@@ -48,47 +52,50 @@ public class OrderServiceImpl implements OrderService {
     private final UserFeignClient userFeignClient;
     private final KafkaTemplate<String, String> kafkaTemplate;
 
-    /** 创建订单：Feign 调用 cart/user/product → 入库 → Kafka 通知 */
+    /** 创建订单：先写订单后扣库存，避免订单入库失败而库存已被扣减 */
     @Override
     @Transactional(rollbackFor = Exception.class)
     public R<Order> createOrder(Long userId, Long addressId, String remark) {
-        R<List<Map<String, Object>>> cartResult = cartFeignClient.getCheckedItems();
+        R<List<CartItemDTO>> cartResult = cartFeignClient.getCheckedItems();
         if (cartResult.getData() == null || cartResult.getData().isEmpty()) {
             throw new BusinessException("购物车中没有已勾选的商品");
         }
 
-        List<Map<String, Object>> checkedItems = cartResult.getData();
-
-        for (Map<String, Object> item : checkedItems) {
-            Long productId = Long.valueOf(item.get("productId").toString());
-            Integer quantity = Integer.valueOf(item.get("quantity").toString());
-            R<String> stockResult = productFeignClient.deductStock(productId, quantity);
-            if (stockResult.getCode() != 200) {
-                throw new BusinessException(stockResult.getCode(), stockResult.getMessage());
-            }
-        }
+        List<CartItemDTO> checkedItems = cartResult.getData();
 
         String orderNo = IdUtil.getSnowflakeNextIdStr();
         BigDecimal totalAmount = BigDecimal.ZERO;
         List<OrderItem> orderItems = new ArrayList<>();
 
-        for (Map<String, Object> item : checkedItems) {
-            Long productId = Long.valueOf(item.get("productId").toString());
-            String productName = (String) item.get("productName");
-            String productImage = (String) item.get("productImage");
-            BigDecimal price = new BigDecimal(item.get("price").toString());
-            Integer quantity = Integer.valueOf(item.get("quantity").toString());
-
-            BigDecimal itemTotal = price.multiply(BigDecimal.valueOf(quantity));
+        for (CartItemDTO item : checkedItems) {
+            BigDecimal itemTotal = item.getPrice().multiply(BigDecimal.valueOf(item.getQuantity()));
             totalAmount = totalAmount.add(itemTotal);
+
+            String productName = item.getName();
+            String productImage = item.getMainImage();
+
+            if (productName == null || productImage == null) {
+                try {
+                    R<ProductDTO> productResult = productFeignClient.getProductDetail(item.getProductId());
+                    if (productResult.getCode() == 200 && productResult.getData() != null) {
+                        if (productName == null) productName = productResult.getData().getName();
+                        if (productImage == null) productImage = productResult.getData().getMainImage();
+                    }
+                } catch (Exception e) {
+                    log.warn("获取商品信息失败, productId={}", item.getProductId(), e);
+                }
+            }
+            if (productName == null) {
+                throw new BusinessException("商品名称缺失，无法下单，productId=" + item.getProductId());
+            }
 
             OrderItem orderItem = new OrderItem();
             orderItem.setOrderNo(orderNo);
-            orderItem.setProductId(productId);
+            orderItem.setProductId(item.getProductId());
             orderItem.setProductName(productName);
             orderItem.setProductImage(productImage);
-            orderItem.setPrice(price);
-            orderItem.setQuantity(quantity);
+            orderItem.setPrice(item.getPrice());
+            orderItem.setQuantity(item.getQuantity());
             orderItem.setTotalAmount(itemTotal);
             orderItems.add(orderItem);
         }
@@ -111,11 +118,20 @@ public class OrderServiceImpl implements OrderService {
                 order.setReceiverAddress(fullAddress);
             }
         }
-        orderMapper.insert(order);
 
+        // 先写订单和明细，确保订单入库成功
+        orderMapper.insert(order);
         for (OrderItem item : orderItems) {
             item.setOrderId(order.getId());
             orderItemMapper.insert(item);
+        }
+
+        // 订单写成功再扣库存，若失败则回滚订单
+        for (CartItemDTO item : checkedItems) {
+            R<String> stockResult = productFeignClient.deductStock(item.getProductId(), item.getQuantity());
+            if (stockResult.getCode() != 200) {
+                throw new BusinessException(stockResult.getCode(), stockResult.getMessage());
+            }
         }
 
         cartFeignClient.clearCart();
@@ -126,7 +142,14 @@ public class OrderServiceImpl implements OrderService {
         kafkaMsg.put("userId", userId);
         kafkaMsg.put("totalAmount", totalAmount);
         kafkaMsg.put("createTime", order.getCreateTime().toString());
-        kafkaTemplate.send(SystemConstants.KAFKA_TOPIC_ORDER_CREATE, JSON.toJSONString(kafkaMsg));
+
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                kafkaTemplate.send(SystemConstants.KAFKA_TOPIC_ORDER_CREATE, JSON.toJSONString(kafkaMsg));
+                log.info("Kafka 消息已发送: orderNo={}", orderNo);
+            }
+        });
 
         log.info("订单创建成功: orderNo={}, totalAmount={}", orderNo, totalAmount);
         return R.ok("下单成功", order);

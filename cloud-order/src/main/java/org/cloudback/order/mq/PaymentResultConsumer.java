@@ -42,9 +42,11 @@ public class PaymentResultConsumer {
                 return;
             }
 
+            // 仅当订单状态为「待支付」时更新，防止覆盖已取消/已完成的订单
             orderMapper.update(null,
                     new LambdaUpdateWrapper<Order>()
                             .eq(Order::getOrderNo, orderNo)
+                            .eq(Order::getStatus, SystemConstants.ORDER_STATUS_UNPAID)
                             .set(Order::getStatus, SystemConstants.ORDER_STATUS_PAID)
                             .set(Order::getPayTime, LocalDateTime.now()));
 
