@@ -59,6 +59,12 @@ public class ProductController {
         return productService.getProductDetail(id);
     }
 
+    /** 获取热门商品 Top8，按浏览量排序 */
+    @GetMapping("/hot")
+    public R<List<Product>> getHotProducts() {
+        return productService.getHotProducts();
+    }
+
     /** 分页搜索商品列表 */
     @GetMapping("/list")
     public R<List<Product>> getProductList(@RequestParam(required = false) Long categoryId,

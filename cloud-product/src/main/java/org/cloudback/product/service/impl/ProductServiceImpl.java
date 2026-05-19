@@ -1,8 +1,10 @@
 package org.cloudback.product.service.impl;
 
+import cn.hutool.core.collection.CollUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.cloudback.common.constant.SystemConstants;
 import org.cloudback.common.exception.BusinessException;
 import org.cloudback.common.result.R;
@@ -12,12 +14,14 @@ import org.cloudback.product.mapper.ProductMapper;
 import org.cloudback.product.model.entity.Category;
 import org.cloudback.product.model.entity.Product;
 import org.cloudback.product.service.ProductService;
+import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -26,12 +30,14 @@ import java.util.stream.Collectors;
  * @author CloudBack
  * @since 2025-05-17
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class ProductServiceImpl implements ProductService {
 
     private final CategoryMapper categoryMapper;
     private final ProductMapper productMapper;
+    private final RedisTemplate<String, Object> redisTemplate;
 
     // ==================== 分类 ====================
 
@@ -100,6 +106,12 @@ public class ProductServiceImpl implements ProductService {
         if (product == null) {
             throw new BusinessException(ResultCode.PRODUCT_NOT_EXIST);
         }
+        try {
+            redisTemplate.opsForZSet().incrementScore(
+                    SystemConstants.PRODUCT_VIEWS_KEY, productId.toString(), 1);
+        } catch (Exception e) {
+            log.warn("Redis浏览量+1失败, productId={}", productId, e);
+        }
         return R.ok(product);
     }
 
@@ -110,7 +122,8 @@ public class ProductServiceImpl implements ProductService {
         wrapper.eq(Product::getStatus, 1);
 
         if (categoryId != null && categoryId > 0) {
-            wrapper.eq(Product::getCategoryId, categoryId);
+            List<Long> categoryIds = collectDescendantIds(categoryId);
+            wrapper.in(Product::getCategoryId, categoryIds);
         }
 
         if (keyword != null && !keyword.isEmpty()) {
@@ -200,6 +213,34 @@ public class ProductServiceImpl implements ProductService {
         return R.ok(approved ? "审核通过" : "已拒绝，商品已下架");
     }
 
+    // ==================== 热门商品 ====================
+
+    @Override
+    public R<List<Product>> getHotProducts() {
+        try {
+            Set<Object> topIds = redisTemplate.opsForZSet()
+                    .reverseRange(SystemConstants.PRODUCT_VIEWS_KEY, 0, 7);
+            if (CollUtil.isNotEmpty(topIds)) {
+                List<Long> ids = topIds.stream()
+                        .map(o -> Long.valueOf(o.toString()))
+                        .collect(Collectors.toList());
+                List<Product> products = productMapper.selectBatchIds(ids);
+                if (CollUtil.isNotEmpty(products)) {
+                    products.sort((a, b) -> ids.indexOf(a.getId()) - ids.indexOf(b.getId()));
+                    return R.ok(products);
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Redis查询热门商品失败，降级为数据库查询", e);
+        }
+        // 降级：按销量降序
+        LambdaQueryWrapper<Product> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(Product::getStatus, 1)
+               .orderByDesc(Product::getSales)
+               .last("LIMIT 8");
+        return R.ok(productMapper.selectList(wrapper));
+    }
+
     // ==================== 权限校验 ====================
 
     private void checkProductManagePermission(String role) {
@@ -212,6 +253,30 @@ public class ProductServiceImpl implements ProductService {
         if (SystemConstants.ROLE_ADMIN.equals(role)) return;
         if (product.getSellerId() != null && product.getSellerId().equals(userId)) return;
         throw new BusinessException(ResultCode.NOT_YOUR_PRODUCT);
+    }
+
+    /**
+     * 收集分类及其所有后代子分类的 ID，让父分类筛选能命中叶子分类下的商品。
+     */
+    private List<Long> collectDescendantIds(Long parentId) {
+        List<Category> all = categoryMapper.selectList(null);
+        Map<Long, List<Category>> parentMap = all.stream()
+                .collect(Collectors.groupingBy(
+                        c -> c.getParentId() == null ? 0L : c.getParentId()));
+        List<Long> ids = new ArrayList<>();
+        ids.add(parentId);
+        collectChildren(parentId, parentMap, ids);
+        return ids;
+    }
+
+    private void collectChildren(Long parentId, Map<Long, List<Category>> parentMap, List<Long> ids) {
+        List<Category> children = parentMap.get(parentId);
+        if (children != null) {
+            for (Category child : children) {
+                ids.add(child.getId());
+                collectChildren(child.getId(), parentMap, ids);
+            }
+        }
     }
 
     // ==================== 库存 ====================

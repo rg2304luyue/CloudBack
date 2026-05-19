@@ -19,6 +19,8 @@ public interface SystemConstants {
     String CART_KEY_PREFIX = REDIS_KEY_PREFIX + "cart:";
     /** Token 黑名单 Key 前缀 */
     String TOKEN_BLACKLIST_KEY = REDIS_KEY_PREFIX + "token:blacklist:";
+    /** 商品浏览量 ZSET Key */
+    String PRODUCT_VIEWS_KEY = REDIS_KEY_PREFIX + "product:views";
 
     /** 用户状态: 正常 */
     Integer USER_STATUS_NORMAL = 1;
