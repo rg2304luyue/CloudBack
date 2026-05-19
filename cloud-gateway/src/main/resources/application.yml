@@ -4,6 +4,8 @@ server:
 spring:
   application:
     name: cloud-gateway
+  codec:
+    max-in-memory-size: 10MB
   cloud:
     nacos:
       discovery:

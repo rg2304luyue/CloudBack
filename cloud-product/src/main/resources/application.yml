@@ -10,6 +10,10 @@ spring:
     password: ${MYSQL_PASSWORD:root123}
     driver-class-name: com.mysql.cj.jdbc.Driver
     type: com.alibaba.druid.pool.DruidDataSource
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 10MB
   cloud:
     nacos:
       discovery:
@@ -36,3 +40,9 @@ mybatis-plus:
 
 knife4j:
   enable: true
+
+minio:
+  endpoint: ${MINIO_ENDPOINT:${VM_HOST:localhost}:9000}
+  access-key: ${MINIO_ACCESS_KEY:admin}
+  secret-key: ${MINIO_SECRET_KEY:admin123456}
+  bucket: ${MINIO_BUCKET:cloudmall-products}

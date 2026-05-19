@@ -2,4 +2,5 @@ org.cloudback.common.config.MyBatisPlusConfig
 org.cloudback.common.config.RedisConfig
 org.cloudback.common.config.AutoFillMetaObjectHandler
 org.cloudback.common.config.JacksonConfig
+org.cloudback.common.config.MinioConfig
 org.cloudback.common.exception.GlobalExceptionHandler

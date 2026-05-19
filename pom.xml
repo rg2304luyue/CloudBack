@@ -45,6 +45,7 @@
         <hutool.version>5.8.35</hutool.version>
         <fastjson2.version>2.0.56</fastjson2.version>
         <jjwt.version>0.12.6</jjwt.version>
+        <minio.version>8.5.14</minio.version>
         <lombok.version>1.18.46</lombok.version>
         <dotenv.version>3.2.0</dotenv.version>
     </properties>
@@ -126,6 +127,13 @@
                 <groupId>io.jsonwebtoken</groupId>
                 <artifactId>jjwt-jackson</artifactId>
                 <version>${jjwt.version}</version>
+            </dependency>
+
+            <!-- MinIO 对象存储 -->
+            <dependency>
+                <groupId>io.minio</groupId>
+                <artifactId>minio</artifactId>
+                <version>${minio.version}</version>
             </dependency>
 
             <!-- dotenv (.env 文件加载) -->

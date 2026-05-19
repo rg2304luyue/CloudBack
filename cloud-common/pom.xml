@@ -61,6 +61,10 @@
             <artifactId>druid-spring-boot-3-starter</artifactId>
             <optional>true</optional>
         </dependency>
+        <dependency>
+            <groupId>io.minio</groupId>
+            <artifactId>minio</artifactId>
+        </dependency>
 
         <dependency>
             <groupId>com.github.xiaoymin</groupId>
