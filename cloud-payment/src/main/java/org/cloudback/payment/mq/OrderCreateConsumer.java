@@ -7,13 +7,12 @@ import lombok.extern.slf4j.Slf4j;
 import org.cloudback.common.constant.SystemConstants;
 import org.cloudback.payment.service.PaymentService;
 import org.springframework.kafka.annotation.KafkaListener;
-import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 import java.math.BigDecimal;
 
 /**
- * Kafka 消费者：监听 order-create 消息，处理支付并回写支付结果。
- * 消费组: payment-consumer-group
+ * Kafka 消费者：监听 order-create 消息，创建待支付记录。
+ * 实际支付由用户手动发起支付宝页面支付完成。
  *
  * @author CloudBack
  * @since 2025-05-17
@@ -24,9 +23,7 @@ import java.math.BigDecimal;
 public class OrderCreateConsumer {
 
     private final PaymentService paymentService;
-    private final KafkaTemplate<String, String> kafkaTemplate;
 
-    /** 消费订单创建消息 → 处理支付 → 发送支付结果 */
     @KafkaListener(topics = SystemConstants.KAFKA_TOPIC_ORDER_CREATE, groupId = "payment-consumer-group")
     public void onOrderCreate(String message) {
         log.info("收到订单创建消息: {}", message);
@@ -37,16 +34,9 @@ public class OrderCreateConsumer {
             BigDecimal totalAmount = msg.getBigDecimal("totalAmount");
 
             paymentService.processPayment(orderNo, userId, totalAmount);
-
-            JSONObject resultMsg = new JSONObject();
-            resultMsg.put("orderNo", orderNo);
-            resultMsg.put("userId", userId);
-            resultMsg.put("status", "SUCCESS");
-            kafkaTemplate.send(SystemConstants.KAFKA_TOPIC_PAYMENT_RESULT, resultMsg.toJSONString());
-
-            log.info("支付结果已发送: orderNo={}", orderNo);
+            log.info("待支付记录已创建: orderNo={}", orderNo);
         } catch (Exception e) {
-            log.error("处理支付消息异常", e);
+            log.error("创建待支付记录异常", e);
         }
     }
 }

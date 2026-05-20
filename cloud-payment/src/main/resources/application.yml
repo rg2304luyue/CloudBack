@@ -47,3 +47,11 @@ mybatis-plus:
 
 knife4j:
   enable: true
+
+alipay:
+  app-id: ${ALIPAY_APP_ID}
+  private-key: ${ALIPAY_PRIVATE_KEY}
+  public-key: ${ALIPAY_PUBLIC_KEY}
+  gateway: ${ALIPAY_GATEWAY:https://openapi-sandbox.dl.alipaydev.com/gateway.do}
+  notify-url: ${ALIPAY_NOTIFY_URL}
+  return-url: ${ALIPAY_RETURN_URL:http://localhost:4173/payment/result}

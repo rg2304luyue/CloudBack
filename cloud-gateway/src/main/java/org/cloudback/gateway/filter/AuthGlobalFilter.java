@@ -35,7 +35,9 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
     private static final List<String> WHITE_URLS = List.of(
             "/auth/login",
             "/auth/register",
-            "/auth/health"
+            "/auth/health",
+            "/payment/notify/alipay",
+            "/payment/return/alipay"
     );
 
     /** 过滤逻辑：白名单放行，其余校验 JWT 并注入用户信息 */
