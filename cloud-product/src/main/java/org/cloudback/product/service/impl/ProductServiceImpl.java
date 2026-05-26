@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.cloudback.common.config.TwoLevelCacheService;
 import org.cloudback.common.constant.SystemConstants;
 import org.cloudback.common.exception.BusinessException;
 import org.cloudback.common.result.R;
@@ -18,10 +19,7 @@ import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.stream.Collectors;
 
 /**
@@ -38,6 +36,10 @@ public class ProductServiceImpl implements ProductService {
     private final CategoryMapper categoryMapper;
     private final ProductMapper productMapper;
     private final RedisTemplate<String, Object> redisTemplate;
+
+    private final TwoLevelCacheService productDetailTwoLevel;
+    private final TwoLevelCacheService hotProductsTwoLevel;
+    private final TwoLevelCacheService productIdListTwoLevel;
 
     // ==================== 分类 ====================
 
@@ -102,10 +104,16 @@ public class ProductServiceImpl implements ProductService {
 
     @Override
     public R<Product> getProductDetail(Long productId) {
-        Product product = productMapper.selectById(productId);
-        if (product == null) {
-            throw new BusinessException(ResultCode.PRODUCT_NOT_EXIST);
-        }
+        String key = SystemConstants.REDIS_KEY_PREFIX + "product:detail:" + productId;
+        Product product = productDetailTwoLevel.get(key, Product.class,
+                () -> {
+                    Product p = productMapper.selectById(productId);
+                    if (p == null) throw new BusinessException(ResultCode.PRODUCT_NOT_EXIST);
+                    return p;
+                },
+                300  // Redis 5分钟
+        );
+
         try {
             redisTemplate.opsForZSet().incrementScore(
                     SystemConstants.PRODUCT_VIEWS_KEY, productId.toString(), 1);
@@ -117,24 +125,55 @@ public class ProductServiceImpl implements ProductService {
 
     @Override
     public R<List<Product>> getProductList(Long categoryId, Integer page, Integer size, String keyword) {
-        LambdaQueryWrapper<Product> wrapper = new LambdaQueryWrapper<>();
+        // 1. 构建缓存 key
+        String cid = categoryId == null ? "all" : String.valueOf(categoryId);
+        String kw = keyword == null ? "" : keyword;
+        String idListKey = SystemConstants.REDIS_KEY_PREFIX + "product:ids:" + cid + ":" + kw;
 
-        wrapper.eq(Product::getStatus, 1);
+        // 2. 查 ID 列表（带缓存）
+        @SuppressWarnings("unchecked")
+        List<Long> allIds = productIdListTwoLevel.get(idListKey, List.class, () -> {
+            LambdaQueryWrapper<Product> wrapper = new LambdaQueryWrapper<>();
+            wrapper.select(Product::getId);  // 只查 ID
+            wrapper.eq(Product::getStatus, 1);
 
-        if (categoryId != null && categoryId > 0) {
-            List<Long> categoryIds = collectDescendantIds(categoryId);
-            wrapper.in(Product::getCategoryId, categoryIds);
+            if (categoryId != null && categoryId > 0) {
+                List<Long> categoryIds = collectDescendantIds(categoryId);
+                wrapper.in(Product::getCategoryId, categoryIds);
+            }
+            if (keyword != null && !keyword.isEmpty()) {
+                wrapper.like(Product::getName, keyword);
+            }
+            wrapper.orderByDesc(Product::getSales);
+
+            return productMapper.selectList(wrapper).stream()
+                    .map(Product::getId)
+                    .collect(Collectors.toList());
+        }, 300);
+
+        if (allIds == null || allIds.isEmpty()) {
+            return R.ok(Collections.emptyList());
         }
 
-        if (keyword != null && !keyword.isEmpty()) {
-            wrapper.like(Product::getName, keyword);
+        // 3. 手动分页
+        int fromIndex = (page - 1) * size;
+        if (fromIndex >= allIds.size()) {
+            return R.ok(Collections.emptyList());
         }
+        int toIndex = Math.min(fromIndex + size, allIds.size());
+        List<Long> pageIds = allIds.subList(fromIndex, toIndex);
 
-        wrapper.orderByDesc(Product::getSales);
+        // 4. 从商品详情缓存逐个取（复用场景1的缓存）
+        List<Product> result = pageIds.stream().map(id ->
+                productDetailTwoLevel.get(
+                        SystemConstants.REDIS_KEY_PREFIX + "product:detail:" + id,
+                        Product.class,
+                        () -> productMapper.selectById(id),
+                        300
+                )
+        ).collect(Collectors.toList());
 
-        Page<Product> productPage = new Page<>(page, size);
-        productPage = productMapper.selectPage(productPage, wrapper);
-        return R.ok(productPage.getRecords());
+        return R.ok(result);
     }
 
     @Override
@@ -172,6 +211,7 @@ public class ProductServiceImpl implements ProductService {
             product.setStatus(SystemConstants.PRODUCT_STATUS_PENDING);
         }
         productMapper.updateById(product);
+        productDetailTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:detail:" + product.getId());
         return R.ok(SystemConstants.ROLE_SELLER.equals(role) ? "已重新提交审核" : "更新商品成功");
     }
 
@@ -184,6 +224,7 @@ public class ProductServiceImpl implements ProductService {
         }
         checkProductPermission(userId, role, dbProduct);
         productMapper.deleteById(id);
+        productDetailTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:detail:" + id);
         return R.ok("删除商品成功");
     }
 
@@ -210,6 +251,7 @@ public class ProductServiceImpl implements ProductService {
         }
         product.setStatus(approved ? 1 : 0);
         productMapper.updateById(product);
+        productDetailTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:detail:" + id);
         return R.ok(approved ? "审核通过" : "已拒绝，商品已下架");
     }
 
@@ -217,28 +259,37 @@ public class ProductServiceImpl implements ProductService {
 
     @Override
     public R<List<Product>> getHotProducts() {
-        try {
-            Set<Object> topIds = redisTemplate.opsForZSet()
-                    .reverseRange(SystemConstants.PRODUCT_VIEWS_KEY, 0, 7);
-            if (CollUtil.isNotEmpty(topIds)) {
-                List<Long> ids = topIds.stream()
-                        .map(o -> Long.valueOf(o.toString()))
-                        .collect(Collectors.toList());
-                List<Product> products = productMapper.selectBatchIds(ids);
-                if (CollUtil.isNotEmpty(products)) {
-                    products.sort((a, b) -> ids.indexOf(a.getId()) - ids.indexOf(b.getId()));
-                    return R.ok(products);
-                }
-            }
-        } catch (Exception e) {
-            log.warn("Redis查询热门商品失败，降级为数据库查询", e);
-        }
-        // 降级：按销量降序
-        LambdaQueryWrapper<Product> wrapper = new LambdaQueryWrapper<>();
-        wrapper.eq(Product::getStatus, 1)
-               .orderByDesc(Product::getSales)
-               .last("LIMIT 8");
-        return R.ok(productMapper.selectList(wrapper));
+        List<Product> products = hotProductsTwoLevel.get(
+                SystemConstants.REDIS_KEY_PREFIX + "product:hot",
+                List.class,
+                () -> {
+                    // 原逻辑：ZSet 取 topId → 批量查
+                    try {
+                        Set<Object> topIds = redisTemplate.opsForZSet()
+                                .reverseRange(SystemConstants.PRODUCT_VIEWS_KEY, 0, 7);
+                        if (CollUtil.isNotEmpty(topIds)) {
+                            List<Long> ids = topIds.stream()
+                                    .map(o -> Long.valueOf(o.toString()))
+                                    .collect(Collectors.toList());
+                            List<Product> list = productMapper.selectBatchIds(ids);
+                            if (CollUtil.isNotEmpty(list)) {
+                                list.sort((a, b) -> ids.indexOf(a.getId()) - ids.indexOf(b.getId()));
+                                return list;
+                            }
+                        }
+                    } catch (Exception e) {
+                        log.warn("Redis查询热门商品失败，降级为数据库查询", e);
+                    }
+                    // 降级
+                    LambdaQueryWrapper<Product> wrapper = new LambdaQueryWrapper<>();
+                    wrapper.eq(Product::getStatus, 1)
+                            .orderByDesc(Product::getSales)
+                            .last("LIMIT 8");
+                    return productMapper.selectList(wrapper);
+                },
+                300
+        );
+        return R.ok(products);
     }
 
     // ==================== 权限校验 ====================
@@ -296,6 +347,7 @@ public class ProductServiceImpl implements ProductService {
         product.setStock(product.getStock() - quantity);
         product.setSales(product.getSales() + quantity);
         productMapper.updateById(product);
+        productDetailTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:detail:" + productId);
         return R.ok("扣减库存成功");
     }
 }

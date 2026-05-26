@@ -143,6 +143,13 @@
                 <version>${dotenv.version}</version>
             </dependency>
 
+            <!-- Caffeine 本地缓存 -->
+            <dependency>
+                <groupId>com.github.ben-manes.caffeine</groupId>
+                <artifactId>caffeine</artifactId>
+                <version>${caffeine.version}</version>
+            </dependency>
+
             <!-- 内部模块 -->
             <dependency>
                 <groupId>org.cloudback</groupId>

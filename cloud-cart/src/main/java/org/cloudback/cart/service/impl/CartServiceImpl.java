@@ -6,6 +6,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.cloudback.cart.dto.CartItem;
 import org.cloudback.cart.feign.ProductFeignClient;
 import org.cloudback.cart.service.CartService;
+import org.cloudback.common.config.TwoLevelCacheService;
 import org.cloudback.common.constant.SystemConstants;
 import org.cloudback.common.exception.BusinessException;
 import org.cloudback.common.result.R;
@@ -37,6 +38,9 @@ public class CartServiceImpl implements CartService {
     private final RedisTemplate<String, Object> redisTemplate;
     private final ProductFeignClient productFeignClient;
     private static final long CART_TTL_DAYS = 7;
+
+    private final TwoLevelCacheService cartTwoLevel;
+
 
     /** 生成购物车 Redis Key */
     private String cartKey(Long userId) {
@@ -76,6 +80,8 @@ public class CartServiceImpl implements CartService {
         }
 
         redisTemplate.expire(key, CART_TTL_DAYS, TimeUnit.DAYS);
+        cartTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "cart:cache:" + userId);
+        cartTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "cart:cache:checked:" + userId);
         return R.ok("添加购物车成功");
     }
 
@@ -94,6 +100,8 @@ public class CartServiceImpl implements CartService {
         cartItem.setQuantity(quantity);
         redisTemplate.opsForHash().put(key, field, JSON.toJSONString(cartItem));
         redisTemplate.expire(key, CART_TTL_DAYS, TimeUnit.DAYS);
+        cartTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "cart:cache:" + userId);
+        cartTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "cart:cache:checked:" + userId);
         return R.ok("更新数量成功");
     }
 
@@ -101,6 +109,8 @@ public class CartServiceImpl implements CartService {
     @Override
     public R<String> removeItem(Long userId, Long productId) {
         redisTemplate.opsForHash().delete(cartKey(userId), String.valueOf(productId));
+        cartTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "cart:cache:" + userId);
+        cartTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "cart:cache:checked:" + userId);
         return R.ok("移除成功");
     }
 
@@ -118,6 +128,8 @@ public class CartServiceImpl implements CartService {
         CartItem cartItem = JSON.parseObject(existing.toString(), CartItem.class);
         cartItem.setChecked(checked);
         redisTemplate.opsForHash().put(key, field, JSON.toJSONString(cartItem));
+        cartTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "cart:cache:" + userId);
+        cartTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "cart:cache:checked:" + userId);
         return R.ok(checked ? "已勾选" : "已取消勾选");
     }
 
@@ -125,38 +137,46 @@ public class CartServiceImpl implements CartService {
     @Override
     public R<String> clearCart(Long userId) {
         redisTemplate.delete(cartKey(userId));
+        cartTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "cart:cache:" + userId);
+        cartTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "cart:cache:checked:" + userId);
         return R.ok("购物车已清空");
     }
 
     /** 获取全部购物车商品（HGETALL），按 productId 排序 */
     @Override
     public R<List<CartItem>> getCartList(Long userId) {
-        Map<Object, Object> entries = redisTemplate.opsForHash().entries(cartKey(userId));
-        if (entries.isEmpty()) {
-            return R.ok(Collections.emptyList());
-        }
+        String cacheKey = SystemConstants.REDIS_KEY_PREFIX + "cart:cache:" + userId;
 
-        List<CartItem> items = entries.values().stream()
-                .map(v -> JSON.parseObject(v.toString(), CartItem.class))
-                .sorted(Comparator.comparing(CartItem::getProductId))
-                .collect(Collectors.toList());
+        List<CartItem> items = cartTwoLevel.get(cacheKey, List.class, () -> {
+            Map<Object, Object> entries = redisTemplate.opsForHash().entries(cartKey(userId));
+            if (entries.isEmpty()) {
+                return Collections.emptyList();
+            }
+            return entries.values().stream()
+                    .map(v -> JSON.parseObject(v.toString(), CartItem.class))
+                    .sorted(Comparator.comparing(CartItem::getProductId))
+                    .collect(Collectors.toList());
+        }, 300);
 
-        return R.ok(items);
+        return R.ok(items != null ? items : Collections.emptyList());
     }
 
     /** 获取已勾选商品（下单时用），过滤 checked=true */
     @Override
     public R<List<CartItem>> getCheckedItems(Long userId) {
-        Map<Object, Object> entries = redisTemplate.opsForHash().entries(cartKey(userId));
-        if (entries.isEmpty()) {
-            return R.ok(Collections.emptyList());
-        }
+        String cacheKey = SystemConstants.REDIS_KEY_PREFIX + "cart:cache:checked:" + userId;
 
-        List<CartItem> items = entries.values().stream()
-                .map(v -> JSON.parseObject(v.toString(), CartItem.class))
-                .filter(CartItem::getChecked)
-                .collect(Collectors.toList());
+        List<CartItem> items = cartTwoLevel.get(cacheKey, List.class, () -> {
+            Map<Object, Object> entries = redisTemplate.opsForHash().entries(cartKey(userId));
+            if (entries.isEmpty()) {
+                return Collections.emptyList();
+            }
+            return entries.values().stream()
+                    .map(v -> JSON.parseObject(v.toString(), CartItem.class))
+                    .filter(CartItem::getChecked)
+                    .collect(Collectors.toList());
+        }, 300);
 
-        return R.ok(items);
+        return R.ok(items != null ? items : Collections.emptyList());
     }
 }

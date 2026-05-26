@@ -4,3 +4,4 @@ org.cloudback.common.config.AutoFillMetaObjectHandler
 org.cloudback.common.config.JacksonConfig
 org.cloudback.common.config.MinioConfig
 org.cloudback.common.exception.GlobalExceptionHandler
+org.cloudback.common.config.CaffeineConfig
