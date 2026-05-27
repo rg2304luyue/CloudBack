@@ -48,6 +48,7 @@
         <minio.version>8.5.14</minio.version>
         <lombok.version>1.18.46</lombok.version>
         <dotenv.version>3.2.0</dotenv.version>
+        <redisson.version>3.34.0</redisson.version>
     </properties>
 
     <dependencyManagement>
@@ -148,6 +149,13 @@
                 <groupId>com.github.ben-manes.caffeine</groupId>
                 <artifactId>caffeine</artifactId>
                 <version>${caffeine.version}</version>
+            </dependency>
+
+            <!-- 布隆过滤器 -->
+            <dependency>
+                <groupId>org.redisson</groupId>
+                <artifactId>redisson-spring-boot-starter</artifactId>
+                <version>${redisson.version}</version>
             </dependency>
 
             <!-- 内部模块 -->

@@ -29,7 +29,7 @@ public interface ProductService {
     R<Product> getProductDetail(Long productId);
 
     /** 分页查询商品列表，支持分类和关键词筛选 */
-    R<List<Product>> getProductList(Long categoryId, Integer page, Integer size, String keyword);
+    R<List<Product>> getProductList(Long categoryId, Integer page, Integer size, String keyword, String sortBy);
 
     /** 卖家查看自己的商品列表 */
     R<List<Product>> getMyProducts(Long userId, Integer page, Integer size);

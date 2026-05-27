@@ -13,7 +13,7 @@ import org.springframework.web.bind.annotation.RequestParam;
  * @author CloudBack
  * @since 2025-05-17
  */
-@FeignClient(name = "cloud-product")
+@FeignClient(name = "cloud-product", fallbackFactory = ProductFeignFallbackFactory.class)
 public interface ProductFeignClient {
 
     /** 扣减商品库存 */

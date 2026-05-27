@@ -6,7 +6,7 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import java.util.List;
 
-@FeignClient(name = "cloud-cart")
+@FeignClient(name = "cloud-cart", fallbackFactory = CartFeignFallbackFactory.class)
 public interface CartFeignClient {
 
     @GetMapping("/cart/checked")

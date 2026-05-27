@@ -6,7 +6,7 @@ import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 
-@FeignClient(name = "cloud-product")
+@FeignClient(name = "cloud-product", fallbackFactory = ProductFeignFallbackFactory.class)
 public interface ProductFeignClient {
 
     @GetMapping("/product/detail/{id}")

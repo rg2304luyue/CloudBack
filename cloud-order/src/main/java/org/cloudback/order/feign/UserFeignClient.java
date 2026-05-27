@@ -13,7 +13,7 @@ import java.util.Map;
  * @author CloudBack
  * @since 2025-05-17
  */
-@FeignClient(name = "cloud-user")
+@FeignClient(name = "cloud-user", fallbackFactory = UserFeignFallbackFactory.class)
 public interface UserFeignClient {
 
     /** 根据地址 ID 查询收货地址详情 */

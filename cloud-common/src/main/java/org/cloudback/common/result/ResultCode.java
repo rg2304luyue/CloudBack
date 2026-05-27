@@ -55,7 +55,11 @@ public enum ResultCode {
     ORDER_STATUS_ERROR(3002, "订单状态异常"),
 
     /** 支付失败 */
-    PAYMENT_ERROR(4001, "支付失败");
+    PAYMENT_ERROR(4001, "支付失败"),
+
+    /** 服务不可用（熔断降级） */
+    SERVICE_UNAVAILABLE(503, "服务暂时不可用，请稍后重试");
+
 
     /** 错误码 */
     private final Integer code;

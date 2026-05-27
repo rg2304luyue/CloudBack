@@ -3,8 +3,10 @@ package org.cloudback.product.service.impl;
 import cn.hutool.core.collection.CollUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.cloudback.common.config.BloomFilterService;
 import org.cloudback.common.config.TwoLevelCacheService;
 import org.cloudback.common.constant.SystemConstants;
 import org.cloudback.common.exception.BusinessException;
@@ -18,7 +20,8 @@ import org.cloudback.product.service.ProductService;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -40,6 +43,8 @@ public class ProductServiceImpl implements ProductService {
     private final TwoLevelCacheService productDetailTwoLevel;
     private final TwoLevelCacheService hotProductsTwoLevel;
     private final TwoLevelCacheService productIdListTwoLevel;
+    private final BloomFilterService bloomFilter;
+
 
     // ==================== 分类 ====================
 
@@ -104,6 +109,11 @@ public class ProductServiceImpl implements ProductService {
 
     @Override
     public R<Product> getProductDetail(Long productId) {
+        // 布隆过滤器拦截不存在的 ID
+        if (!bloomFilter.mightContain(productId)) {
+            throw new BusinessException(ResultCode.PRODUCT_NOT_EXIST);
+        }
+
         String key = SystemConstants.REDIS_KEY_PREFIX + "product:detail:" + productId;
         Product product = productDetailTwoLevel.get(key, Product.class,
                 () -> {
@@ -124,7 +134,7 @@ public class ProductServiceImpl implements ProductService {
     }
 
     @Override
-    public R<List<Product>> getProductList(Long categoryId, Integer page, Integer size, String keyword) {
+    public R<List<Product>> getProductList(Long categoryId, Integer page, Integer size, String keyword, String sortBy) {
         // 1. 构建缓存 key
         String cid = categoryId == null ? "all" : String.valueOf(categoryId);
         String kw = keyword == null ? "" : keyword;
@@ -152,19 +162,11 @@ public class ProductServiceImpl implements ProductService {
         }, 300);
 
         if (allIds == null || allIds.isEmpty()) {
-            return R.ok(Collections.emptyList());
+            return R.ok(Collections.emptyList(), 0);
         }
 
-        // 3. 手动分页
-        int fromIndex = (page - 1) * size;
-        if (fromIndex >= allIds.size()) {
-            return R.ok(Collections.emptyList());
-        }
-        int toIndex = Math.min(fromIndex + size, allIds.size());
-        List<Long> pageIds = allIds.subList(fromIndex, toIndex);
-
-        // 4. 从商品详情缓存逐个取（复用场景1的缓存）
-        List<Product> result = pageIds.stream().map(id ->
+        // 3. 加载全部商品（用于排序）
+        List<Product> allProducts = allIds.stream().map(id ->
                 productDetailTwoLevel.get(
                         SystemConstants.REDIS_KEY_PREFIX + "product:detail:" + id,
                         Product.class,
@@ -173,7 +175,24 @@ public class ProductServiceImpl implements ProductService {
                 )
         ).collect(Collectors.toList());
 
-        return R.ok(result);
+        // 4. 排序
+        if ("price_asc".equals(sortBy)) {
+            allProducts.sort(Comparator.comparing(Product::getPrice));
+        } else if ("price_desc".equals(sortBy)) {
+            allProducts.sort(Comparator.comparing(Product::getPrice).reversed());
+        }
+        // "sales" 或默认 → ID 列表本来就是按销量排的，无需额外排序
+
+        // 5. 手动分页
+        int total = allProducts.size();
+        int fromIndex = (page - 1) * size;
+        if (fromIndex >= total) {
+            return R.ok(Collections.emptyList(), 0);
+        }
+        int toIndex = Math.min(fromIndex + size, total);
+        List<Product> result = allProducts.subList(fromIndex, toIndex);
+
+        return R.ok(result, total);
     }
 
     @Override
@@ -194,6 +213,11 @@ public class ProductServiceImpl implements ProductService {
         // 卖家提交需要审核，管理员直接上架
         product.setStatus(SystemConstants.ROLE_ADMIN.equals(role) ? 1 : SystemConstants.PRODUCT_STATUS_PENDING);
         productMapper.insert(product);
+        // 注册到布隆过滤器
+        bloomFilter.addProductId(product.getId());
+
+        // 新增商品后，列表和热门缓存应失效
+        hotProductsTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:hot");
         return R.ok(SystemConstants.ROLE_ADMIN.equals(role) ? "添加商品成功" : "添加成功，等待管理员审核");
     }
 
@@ -211,6 +235,9 @@ public class ProductServiceImpl implements ProductService {
             product.setStatus(SystemConstants.PRODUCT_STATUS_PENDING);
         }
         productMapper.updateById(product);
+
+        // 更新商品后，列表和热门缓存应失效
+        hotProductsTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:hot");
         productDetailTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:detail:" + product.getId());
         return R.ok(SystemConstants.ROLE_SELLER.equals(role) ? "已重新提交审核" : "更新商品成功");
     }
@@ -224,6 +251,9 @@ public class ProductServiceImpl implements ProductService {
         }
         checkProductPermission(userId, role, dbProduct);
         productMapper.deleteById(id);
+
+        // 删除商品后，列表和热门缓存应失效
+        hotProductsTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:hot");
         productDetailTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:detail:" + id);
         return R.ok("删除商品成功");
     }
@@ -251,6 +281,9 @@ public class ProductServiceImpl implements ProductService {
         }
         product.setStatus(approved ? 1 : 0);
         productMapper.updateById(product);
+
+        // 审核商品后，列表和热门缓存应失效
+        hotProductsTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:hot");
         productDetailTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:detail:" + id);
         return R.ok(approved ? "审核通过" : "已拒绝，商品已下架");
     }
@@ -347,7 +380,26 @@ public class ProductServiceImpl implements ProductService {
         product.setStock(product.getStock() - quantity);
         product.setSales(product.getSales() + quantity);
         productMapper.updateById(product);
-        productDetailTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:detail:" + productId);
+
+        // 在事务commit后提交缓存
+        String cacheKey = SystemConstants.REDIS_KEY_PREFIX + "product:detail:" + productId;
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                productDetailTwoLevel.evict(cacheKey);
+            }
+        });
         return R.ok("扣减库存成功");
+    }
+
+    @PostConstruct
+    public void initBloomFilter() {
+        List<Product> allProducts = productMapper.selectList(
+                new LambdaQueryWrapper<Product>().select(Product::getId)
+        );
+        for (Product p : allProducts) {
+            bloomFilter.addProductId(p.getId());
+        }
+        log.info("已加载 {} 条商品 ID 到布隆过滤器", allProducts.size());
     }
 }

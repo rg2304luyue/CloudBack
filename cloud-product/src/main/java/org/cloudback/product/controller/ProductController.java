@@ -84,8 +84,9 @@ public class ProductController {
     public R<List<Product>> getProductList(@RequestParam(required = false) Long categoryId,
                                            @RequestParam(defaultValue = "1") Integer page,
                                            @RequestParam(defaultValue = "10") Integer size,
-                                           @RequestParam(required = false) String keyword) {
-        return productService.getProductList(categoryId, page, size, keyword);
+                                           @RequestParam(required = false) String keyword,
+                                           @RequestParam(required = false) String sortBy) {
+        return productService.getProductList(categoryId, page, size, keyword, sortBy);
     }
 
     /** 卖家查看自己的商品 */
