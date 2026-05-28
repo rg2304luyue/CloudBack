@@ -1,7 +1,10 @@
 package org.cloudback.cart.controller;
 
 import lombok.RequiredArgsConstructor;
+import org.cloudback.cart.dto.AddCartItemRequest;
 import org.cloudback.cart.dto.CartItem;
+import org.cloudback.cart.dto.CheckCartItemRequest;
+import org.cloudback.cart.dto.UpdateCartQuantityRequest;
 import org.cloudback.cart.service.CartService;
 import org.cloudback.common.result.R;
 import org.springframework.web.bind.annotation.*;
@@ -22,44 +25,43 @@ public class CartController {
     private final CartService cartService;
 
     /** 添加商品到购物车 */
-    @PostMapping("/add")
+    @PostMapping("/items")
     public R<String> addItem(@RequestHeader("X-User-Id") Long userId,
-                             @RequestParam Long productId,
-                             @RequestParam(defaultValue = "1") Integer quantity) {
-        return cartService.addItem(userId, productId, quantity);
+                             @RequestBody AddCartItemRequest request) {
+        return cartService.addItem(userId, request.productId(), request.quantity());
     }
 
     /** 更新商品数量 */
-    @PutMapping("/quantity")
+    @PatchMapping("/items/{productId}")
     public R<String> updateQuantity(@RequestHeader("X-User-Id") Long userId,
-                                    @RequestParam Long productId,
-                                    @RequestParam Integer quantity) {
-        return cartService.updateQuantity(userId, productId, quantity);
+                                    @PathVariable Long productId,
+                                    @RequestBody UpdateCartQuantityRequest request) {
+        return cartService.updateQuantity(userId, productId, request.quantity());
     }
 
     /** 勾选/取消勾选 */
-    @PutMapping("/check")
+    @PatchMapping("/items/{productId}/check")
     public R<String> checkItem(@RequestHeader("X-User-Id") Long userId,
-                               @RequestParam Long productId,
-                               @RequestParam Boolean checked) {
-        return cartService.checkItem(userId, productId, checked);
+                               @PathVariable Long productId,
+                               @RequestBody CheckCartItemRequest request) {
+        return cartService.checkItem(userId, productId, request.checked());
     }
 
     /** 删除单个商品 */
-    @DeleteMapping("/{productId}")
+    @DeleteMapping("/items/{productId}")
     public R<String> removeItem(@RequestHeader("X-User-Id") Long userId,
                                 @PathVariable Long productId) {
         return cartService.removeItem(userId, productId);
     }
 
     /** 清空购物车 */
-    @DeleteMapping("/clear")
+    @DeleteMapping("/items")
     public R<String> clearCart(@RequestHeader("X-User-Id") Long userId) {
         return cartService.clearCart(userId);
     }
 
     /** 查看购物车全部商品 */
-    @GetMapping("/list")
+    @GetMapping
     public R<List<CartItem>> getCartList(@RequestHeader("X-User-Id") Long userId) {
         return cartService.getCartList(userId);
     }

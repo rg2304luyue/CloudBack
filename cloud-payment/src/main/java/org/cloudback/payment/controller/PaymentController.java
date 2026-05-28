@@ -4,6 +4,7 @@ import com.alibaba.fastjson2.JSON;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.cloudback.common.result.R;
+import org.cloudback.payment.dto.CreatePaymentRequest;
 import org.cloudback.payment.model.entity.Payment;
 import org.cloudback.payment.service.PaymentService;
 import org.springframework.web.bind.annotation.*;
@@ -29,10 +30,10 @@ public class PaymentController {
     }
 
     /** 发起支付宝页面支付，返回支付表单 HTML */
-    @PostMapping("/pay/{orderNo}")
-    public R<String> pay(@PathVariable String orderNo,
+    @PostMapping("/pay")
+    public R<String> pay(@RequestBody CreatePaymentRequest request,
                          @RequestHeader("X-User-Id") Long userId) {
-        return paymentService.createPayForm(orderNo, userId);
+        return paymentService.createPayForm(request.orderNo(), userId);
     }
 
     /** 支付宝异步通知（服务端回调） */

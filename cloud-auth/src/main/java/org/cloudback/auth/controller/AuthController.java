@@ -1,12 +1,11 @@
 package org.cloudback.auth.controller;
 
 import lombok.RequiredArgsConstructor;
+import org.cloudback.auth.dto.LoginRequest;
+import org.cloudback.auth.dto.RegisterRequest;
 import org.cloudback.auth.service.AuthService;
 import org.cloudback.common.result.R;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 
 /**
  * 认证控制器，提供注册和登录接口。
@@ -24,16 +23,13 @@ public class AuthController {
 
     /** 用户注册 */
     @PostMapping("/register")
-    public R<String> register(@RequestParam String username,
-                              @RequestParam String password,
-                              @RequestParam(required = false) String nickname) {
-        return authService.register(username, password, nickname);
+    public R<String> register(@RequestBody RegisterRequest request) {
+        return authService.register(request.username(), request.password(), request.nickname());
     }
 
     /** 用户登录，返回 JWT Token */
     @PostMapping("/login")
-    public R<String> login(@RequestParam String username,
-                           @RequestParam String password) {
-        return authService.login(username, password);
+    public R<String> login(@RequestBody LoginRequest request) {
+        return authService.login(request.username(), request.password());
     }
 }

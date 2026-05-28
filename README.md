@@ -189,11 +189,11 @@ Gateway 白名单外的所有请求强制携带有效 JWT，解析失败返回 4
 写路径:  DB 更新 → evict(Redis → Caffeine) 双删，L1 短 TTL 兜底
 ```
 
-| Bean 名称 | 使用场景 | Caffeine 最大条目 | Redis Key 前缀 |
-|---|---|---|---|
-| `productDetailTwoLevel` | 商品详情 | 1000 | `cloud:product:detail:` |
-| `hotProductsTwoLevel` | 热门商品 Top8 | 5 | `cloud:product:hot` |
-| `productIdListTwoLevel` | 商品列表 ID 映射 | 200 | `cloud:product:ids:` |
+| Bean 名称 | 使用场景 | Caffeine 最大条目 | Redis Key 前缀 | Redis TTL |
+|---|---|---|---|---|---|
+| `productDetailTwoLevel` | 商品详情 | 1000 | `cloud:product:detail:` | 300s |
+| `hotProductsTwoLevel` | 热门商品 Top8 | 5 | `cloud:product:hot` | 300s |
+| `productIdListTwoLevel` | 商品列表 ID 映射 | 200 | `cloud:product:ids:` | 120s | 120s（2min，写操作不主动淘汰，短 TTL 兜底） |
 | `cartTwoLevel` | 购物车（独立 key） | 500 | `cloud:cart:cache:` |
 
 ### 各场景实现
@@ -202,7 +202,7 @@ Gateway 白名单外的所有请求强制携带有效 JWT，解析失败返回 4
 
 **热门商品**：`getHotProducts()` 的 DB loader 仍从 Redis ZSet 取 topId → 批量查 DB，结果被 L1/L2 缓存。L1 30s 过期后自动从 L2 或 DB 刷新，避免每次首页请求都查 ZSet+DB。
 
-**商品列表（ID-Mapping）**：条件查询的组合太多（categoryId × keyword），无法直接缓存全量产品。改为缓存"查询条件 → 产品 ID 列表"的映射（`cloud:product:ids:{categoryId}:{keyword}`），拿到 ID 列表后手动分页，再逐个从 `productDetailTwoLevel` 获取产品详情。一份产品详情只存一份，避免缓存膨胀。
+**商品列表（ID-Mapping）**：条件查询的组合太多（categoryId × keyword），无法直接缓存全量产品。改为缓存"查询条件 → 产品 ID 列表"的映射（`cloud:product:ids:{categoryId}:{keyword}`，Redis TTL 2min），拿到 ID 列表后手动分页，再逐个从 `productDetailTwoLevel` 获取产品详情。一份产品详情只存一份，避免缓存膨胀。新增/删除/审核商品后不主动淘汰 ID 列表缓存，通过短 TTL 自动过期保证最终一致。
 
 **购物车**：源数据仍在 Redis Hash（`cloud:cart:{userId}`），读路径上包一层 Caffeine 缓存（`cloud:cart:cache:{userId}`），减少高频读操作的 Redis 网络往返。`addItem()` / `updateQuantity()` / `removeItem()` / `checkItem()` / `clearCart()` 操作后同步 evict 缓存。
 
@@ -316,7 +316,7 @@ GET /api/product/list?categoryId=&keyword=&page=&size=
 采用 ID-Mapping 策略避免缓存膨胀（详见二级缓存架构章节）：
   1. 先查 cloud:product:ids:{categoryId}:{keyword} 缓存（L1→L2）
   2. 未命中则查 DB：只 SELECT id，按条件过滤 + 按销量排序
-     → 缓存 ID 列表，TTL 5min
+     → 缓存 ID 列表，TTL 2min（写操作不主动淘汰，短 TTL 兜底）
   3. 手动分页截取当前页的 ID 子集
   4. 逐个从商品详情缓存获取完整 Product 对象（复用 getProductDetail 的缓存）
 
@@ -547,49 +547,49 @@ PUT /api/user/admin/reset-password?targetUserId=&newPassword=
 
 | 方法 | 路径 | 服务 | 认证 | 说明 |
 |---|---|---|---|---|
-| POST | `/api/auth/register` | auth | 否 | 注册 |
-| POST | `/api/auth/login` | auth | 否 | 登录，返回 JWT |
-| GET | `/api/user/info` | user | 是 | 获取个人信息 |
-| PUT | `/api/user/info` | user | 是 | 修改个人信息（含头像） |
-| POST | `/api/user/avatar/upload` | user | 是 | 上传头像到 MinIO |
-| GET | `/api/user/address` | user | 是 | 地址列表 |
-| GET | `/api/user/address/{id}` | user | 是 | 地址详情 |
-| POST | `/api/user/address` | user | 是 | 添加地址 |
-| PUT | `/api/user/address` | user | 是 | 修改地址 |
-| DELETE | `/api/user/address/{id}` | user | 是 | 删除地址 |
-| POST | `/api/user/apply-seller` | user | 是 | 申请卖家 |
-| GET | `/api/user/admin/list` | user | 是 | 管理员-用户列表 |
-| PUT | `/api/user/admin/reset-password` | user | 是 | 管理员-重置密码 |
-| GET | `/api/user/admin/applications` | user | 是 | 管理员-卖家申请列表 |
-| PUT | `/api/user/admin/applications/{id}` | user | 是 | 管理员-审批卖家申请 |
-| GET | `/api/product/category` | product | 否 | 分类树 |
-| POST | `/api/product/category` | product | 是 | 添加分类(SELLER/ADMIN) |
-| PUT | `/api/product/category` | product | 是 | 修改分类 |
-| DELETE | `/api/product/category/{id}` | product | 是 | 删除分类 |
-| GET | `/api/product/hot` | product | 否 | 热门商品 Top8 |
-| GET | `/api/product/list` | product | 否 | 商品列表(分页/搜索/分类) |
-| GET | `/api/product/detail/{id}` | product | 否 | 商品详情 |
-| GET | `/api/product/my-list` | product | 是 | 卖家自己的商品 |
-| POST | `/api/product` | product | 是 | 添加商品(SELLER/ADMIN) |
-| PUT | `/api/product` | product | 是 | 修改商品 |
-| DELETE | `/api/product/{id}` | product | 是 | 删除商品 |
-| GET | `/api/product/admin/pending` | product | 是 | 管理员-待审核商品 |
-| PUT | `/api/product/admin/review/{id}` | product | 是 | 管理员-审批商品 |
-| POST | `/api/product/upload` | product | 是 | 上传商品图片到 MinIO |
-| PUT | `/api/product/stock/deduct/{id}` | product | 内部 | Feign 原子扣库存（WHERE stock >= ?） |
-| PUT | `/api/product/stock/restore/{id}` | product | 内部 | Feign 回滚库存（取消订单时调用） |
-| GET | `/api/cart/list` | cart | 是 | 购物车列表 |
-| POST | `/api/cart/add` | cart | 是 | 加入购物车 |
-| PUT | `/api/cart/quantity` | cart | 是 | 修改数量 |
-| PUT | `/api/cart/check` | cart | 是 | 勾选/取消 |
-| DELETE | `/api/cart/{productId}` | cart | 是 | 删除单项 |
-| DELETE | `/api/cart/clear` | cart | 是 | 清空购物车 |
+| POST | `/api/auth/register` | auth | 否 | 注册（JSON body: username, password, nickname） |
+| POST | `/api/auth/login` | auth | 否 | 登录，返回 JWT（JSON body: username, password） |
+| GET | `/api/users/me` | user | 是 | 获取个人信息 |
+| PATCH | `/api/users/me` | user | 是 | 修改个人信息（JSON body） |
+| POST | `/api/users/me/avatar` | user | 是 | 上传头像到 MinIO |
+| GET | `/api/users/me/addresses` | user | 是 | 地址列表 |
+| GET | `/api/users/me/addresses/{id}` | user | 是 | 地址详情 |
+| POST | `/api/users/me/addresses` | user | 是 | 添加地址（JSON body） |
+| PUT | `/api/users/me/addresses/{id}` | user | 是 | 修改地址（JSON body，id 在 URL） |
+| DELETE | `/api/users/me/addresses/{id}` | user | 是 | 删除地址 |
+| POST | `/api/users/me/apply-seller` | user | 是 | 申请卖家 |
+| GET | `/api/admin/users` | user | 是 | 管理员-用户列表 |
+| PUT | `/api/admin/users/{id}/password` | user | 是 | 管理员-重置密码（JSON body: newPassword） |
+| GET | `/api/admin/applications` | user | 是 | 管理员-卖家申请列表 |
+| PATCH | `/api/admin/applications/{id}` | user | 是 | 管理员-审批卖家申请（JSON body: approved） |
+| GET | `/api/categories` | product | 否 | 分类树 |
+| POST | `/api/categories` | product | 是 | 添加分类（JSON body，SELLER/ADMIN） |
+| PUT | `/api/categories/{id}` | product | 是 | 修改分类（JSON body，id 在 URL） |
+| DELETE | `/api/categories/{id}` | product | 是 | 删除分类 |
+| GET | `/api/products/hot` | product | 否 | 热门商品 Top8 |
+| GET | `/api/products` | product | 否 | 商品列表(分页/搜索/分类) |
+| GET | `/api/products/{id}` | product | 否 | 商品详情 |
+| GET | `/api/seller/products/mine` | product | 是 | 卖家自己的商品 |
+| POST | `/api/seller/products` | product | 是 | 添加商品（JSON body，SELLER/ADMIN） |
+| PUT | `/api/seller/products/{id}` | product | 是 | 修改商品（JSON body，id 在 URL） |
+| DELETE | `/api/seller/products/{id}` | product | 是 | 删除商品 |
+| GET | `/api/admin/products/pending` | product | 是 | 管理员-待审核商品 |
+| PATCH | `/api/admin/products/{id}/review` | product | 是 | 管理员-审批商品（JSON body: approved） |
+| POST | `/api/products/upload` | product | 是 | 上传商品图片到 MinIO |
+| PUT | `/api/products/stock/deduct/{id}` | product | 内部 | Feign 原子扣库存（WHERE stock >= ?） |
+| PUT | `/api/products/stock/restore/{id}` | product | 内部 | Feign 回滚库存（取消订单时调用） |
+| GET | `/api/cart` | cart | 是 | 购物车列表 |
+| POST | `/api/cart/items` | cart | 是 | 加入购物车（JSON body: productId, quantity） |
+| PATCH | `/api/cart/items/{productId}` | cart | 是 | 修改数量（JSON body: quantity） |
+| PATCH | `/api/cart/items/{productId}/check` | cart | 是 | 勾选/取消（JSON body: checked） |
+| DELETE | `/api/cart/items/{productId}` | cart | 是 | 删除单项 |
+| DELETE | `/api/cart/items` | cart | 是 | 清空购物车 |
 | GET | `/api/cart/checked` | cart | 内部 | Feign 获取勾选商品 |
-| POST | `/api/order/create` | order | 是 | 创建订单 |
-| GET | `/api/order/list` | order | 是 | 订单列表 |
-| GET | `/api/order/detail/{id}` | order | 是 | 订单详情（含订单明细 orderItems） |
-| PUT | `/api/order/cancel/{id}` | order | 是 | 取消订单 |
-| POST | `/api/payment/pay/{orderNo}` | payment | 是 | 发起支付宝页面支付，返回支付表单 |
+| POST | `/api/orders` | order | 是 | 创建订单（JSON body: addressId, remark） |
+| GET | `/api/orders` | order | 是 | 订单列表（query: page, size） |
+| GET | `/api/orders/{id}` | order | 是 | 订单详情（含订单明细 orderItems） |
+| POST | `/api/orders/{id}/cancel` | order | 是 | 取消订单（同时回滚库存） |
+| POST | `/api/payment/pay` | payment | 是 | 发起支付（JSON body: orderNo, method） |
 | POST | `/api/payment/notify/alipay` | payment | 否 | 支付宝异步通知回调 |
 | GET | `/api/payment/return/alipay` | payment | 否 | 支付宝同步回跳（查支付→跳前端） |
 | GET | `/api/payment/{orderNo}` | payment | 是 | 查询支付记录（待支付时主动查支付宝） |
@@ -644,7 +644,7 @@ order_info ──< payment
 | `cloud:product:views` | ZSet | 商品浏览量排行榜，score=浏览次数，member=productId |
 | `cloud:product:detail:{id}` | String | 商品详情 L2 缓存，TTL 5 分钟 |
 | `cloud:product:hot` | String | 热门商品 Top8 列表 L2 缓存，TTL 5 分钟 |
-| `cloud:product:ids:{categoryId}:{keyword}` | String | 商品列表 ID 映射 L2 缓存，TTL 5 分钟 |
+| `cloud:product:ids:{categoryId}:{keyword}` | String | 商品列表 ID 映射 L2 缓存，TTL 2 分钟（写操作不主动淘汰，短 TTL 兜底） |
 | `cloud:cart:cache:{userId}` | String | 购物车 L2 缓存，TTL 5 分钟 |
 | `cloud:cart:cache:checked:{userId}` | String | 已勾选商品 L2 缓存，TTL 5 分钟 |
 | `cloud:token:blacklist:{tokenId}` | String | Token 黑名单（预留，当前未使用） |

@@ -6,6 +6,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.cloudback.common.entity.User;
 import org.cloudback.common.result.R;
+import org.cloudback.user.dto.UpdateUserRequest;
 import org.cloudback.user.model.entity.Address;
 import org.cloudback.user.model.entity.SellerApplication;
 import org.cloudback.user.service.UserService;
@@ -25,7 +26,7 @@ import java.util.UUID;
  */
 @Slf4j
 @RestController
-@RequestMapping("/user")
+@RequestMapping("/users")
 @RequiredArgsConstructor
 public class UserController {
 
@@ -39,91 +40,62 @@ public class UserController {
     private String endpoint;
 
     /** 获取当前用户信息（已脱敏） */
-    @GetMapping("/info")
+    @GetMapping("/me")
     public R<User> getUserInfo(@RequestHeader("X-User-Id") Long userId) {
         return userService.getUserInfo(userId);
     }
 
     /** 更新当前用户信息 */
-    @PutMapping("/info")
+    @PatchMapping("/me")
     public R<String> updateUserInfo(@RequestHeader("X-User-Id") Long userId,
-                                    @RequestParam(required = false) String nickname,
-                                    @RequestParam(required = false) String phone,
-                                    @RequestParam(required = false) String email,
-                                    @RequestParam(required = false) String avatar) {
-        return userService.updateUserInfo(userId, nickname, phone, email, avatar);
+                                    @RequestBody UpdateUserRequest request) {
+        return userService.updateUserInfo(userId, request.nickname(), request.phone(), request.email(), request.avatar());
     }
 
     /** 获取收货地址列表 */
-    @GetMapping("/address")
+    @GetMapping("/me/addresses")
     public R<List<Address>> getAddressList(@RequestHeader("X-User-Id") Long userId) {
         return userService.getAddressList(userId);
     }
 
     /** 获取单个收货地址详情 */
-    @GetMapping("/address/{addressId}")
+    @GetMapping("/me/addresses/{addressId}")
     public R<Address> getAddressById(@RequestHeader("X-User-Id") Long userId,
                                      @PathVariable Long addressId) {
         return userService.getAddressById(userId, addressId);
     }
 
     /** 添加收货地址 */
-    @PostMapping("/address")
+    @PostMapping("/me/addresses")
     public R<String> addAddress(@RequestHeader("X-User-Id") Long userId,
                                 @RequestBody Address address) {
         return userService.addAddress(userId, address);
     }
 
     /** 修改收货地址 */
-    @PutMapping("/address")
+    @PutMapping("/me/addresses/{addressId}")
     public R<String> updateAddress(@RequestHeader("X-User-Id") Long userId,
+                                   @PathVariable Long addressId,
                                    @RequestBody Address address) {
+        address.setId(addressId);
         return userService.updateAddress(userId, address);
     }
 
     /** 删除收货地址 */
-    @DeleteMapping("/address/{addressId}")
+    @DeleteMapping("/me/addresses/{addressId}")
     public R<String> deleteAddress(@RequestHeader("X-User-Id") Long userId,
                                    @PathVariable Long addressId) {
         return userService.deleteAddress(userId, addressId);
     }
 
-    /** 管理员：获取所有用户列表 */
-    @GetMapping("/admin/list")
-    public R<List<User>> getUserList(@RequestHeader("X-User-Role") String role) {
-        return userService.getUserList(role);
-    }
-
     /** 买家申请成为卖家 */
-    @PostMapping("/apply-seller")
+    @PostMapping("/me/apply-seller")
     public R<String> applySeller(@RequestHeader("X-User-Id") Long userId) {
         return userService.applySeller(userId);
     }
 
-    /** 管理员：查看待审批的卖家申请 */
-    @GetMapping("/admin/applications")
-    public R<List<SellerApplication>> getApplications(@RequestHeader("X-User-Role") String role) {
-        return userService.getApplications(role);
-    }
-
-    /** 管理员：审批卖家申请 */
-    @PutMapping("/admin/applications/{id}")
-    public R<String> processApplication(@RequestHeader("X-User-Role") String role,
-                                        @PathVariable Long id,
-                                        @RequestParam boolean approved) {
-        return userService.processApplication(role, id, approved);
-    }
-
-    /** 管理员：重置用户密码 */
-    @PutMapping("/admin/reset-password")
-    public R<String> resetPassword(@RequestHeader("X-User-Role") String role,
-                                   @RequestParam Long targetUserId,
-                                   @RequestParam String newPassword) {
-        return userService.resetPassword(role, targetUserId, newPassword);
-    }
-
     /** 上传头像到 MinIO，返回可访问的 URL */
-    @PostMapping("/avatar/upload")
+    @PostMapping("/me/avatar")
     public R<String> uploadAvatar(@RequestParam("file") MultipartFile file) {
         if (file.isEmpty()) {
             return R.fail("请选择文件");

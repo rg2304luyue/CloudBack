@@ -12,6 +12,6 @@ public interface CartFeignClient {
     @GetMapping("/cart/checked")
     R<List<CartItemDTO>> getCheckedItems();
 
-    @DeleteMapping("/cart/clear")
+    @DeleteMapping("/cart/items")
     R<String> clearCart();
 }

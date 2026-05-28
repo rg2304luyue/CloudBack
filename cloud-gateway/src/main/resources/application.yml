@@ -36,13 +36,37 @@ spring:
         - id: cloud-user
           uri: lb://cloud-user
           predicates:
-            - Path=/api/user/**
+            - Path=/api/users/**
           filters:
             - StripPrefix=1
-        - id: cloud-product
+        - id: cloud-admin-users
+          uri: lb://cloud-user
+          predicates:
+            - Path=/api/admin/users/**,/api/admin/applications/**
+          filters:
+            - StripPrefix=1
+        - id: cloud-categories
           uri: lb://cloud-product
           predicates:
-            - Path=/api/product/**
+            - Path=/api/categories/**
+          filters:
+            - StripPrefix=1
+        - id: cloud-seller-products
+          uri: lb://cloud-product
+          predicates:
+            - Path=/api/seller/products/**
+          filters:
+            - StripPrefix=1
+        - id: cloud-admin-products
+          uri: lb://cloud-product
+          predicates:
+            - Path=/api/admin/products/**
+          filters:
+            - StripPrefix=1
+        - id: cloud-products
+          uri: lb://cloud-product
+          predicates:
+            - Path=/api/products/**
           filters:
             - StripPrefix=1
         - id: cloud-cart
@@ -51,10 +75,10 @@ spring:
             - Path=/api/cart/**
           filters:
             - StripPrefix=1
-        - id: cloud-order
+        - id: cloud-orders
           uri: lb://cloud-order
           predicates:
-            - Path=/api/order/**
+            - Path=/api/orders/**
           filters:
             - StripPrefix=1
         - id: cloud-payment

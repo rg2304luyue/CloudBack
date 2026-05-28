@@ -2,6 +2,7 @@ package org.cloudback.order.controller;
 
 import lombok.RequiredArgsConstructor;
 import org.cloudback.common.result.R;
+import org.cloudback.order.dto.CreateOrderRequest;
 import org.cloudback.order.model.entity.Order;
 import org.cloudback.order.service.OrderService;
 import org.springframework.web.bind.annotation.*;
@@ -15,29 +16,28 @@ import java.util.List;
  * @since 2025-05-17
  */
 @RestController
-@RequestMapping("/order")
+@RequestMapping("/orders")
 @RequiredArgsConstructor
 public class OrderController {
 
     private final OrderService orderService;
 
     /** 创建订单 */
-    @PostMapping("/create")
+    @PostMapping
     public R<Order> createOrder(@RequestHeader("X-User-Id") Long userId,
-                                @RequestParam(required = false) Long addressId,
-                                @RequestParam(required = false) String remark) {
-        return orderService.createOrder(userId, addressId, remark);
+                                @RequestBody CreateOrderRequest request) {
+        return orderService.createOrder(userId, request.addressId(), request.remark());
     }
 
     /** 订单详情 */
-    @GetMapping("/detail/{id}")
+    @GetMapping("/{id}")
     public R<Order> getOrderDetail(@RequestHeader("X-User-Id") Long userId,
                                    @PathVariable Long id) {
         return orderService.getOrderDetail(userId, id);
     }
 
     /** 订单列表 */
-    @GetMapping("/list")
+    @GetMapping
     public R<List<Order>> getOrderList(@RequestHeader("X-User-Id") Long userId,
                                        @RequestParam(defaultValue = "1") Integer page,
                                        @RequestParam(defaultValue = "10") Integer size) {
@@ -45,7 +45,7 @@ public class OrderController {
     }
 
     /** 取消订单 */
-    @PutMapping("/cancel/{id}")
+    @PostMapping("/{id}/cancel")
     public R<String> cancelOrder(@RequestHeader("X-User-Id") Long userId,
                                  @PathVariable Long id) {
         return orderService.cancelOrder(userId, id);

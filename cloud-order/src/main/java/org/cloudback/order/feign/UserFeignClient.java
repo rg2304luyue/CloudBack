@@ -17,7 +17,7 @@ import java.util.Map;
 public interface UserFeignClient {
 
     /** 根据地址 ID 查询收货地址详情 */
-    @GetMapping("/user/address/{addressId}")
+    @GetMapping("/users/me/addresses/{addressId}")
     org.cloudback.common.result.R<Map<String, Object>> getAddressById(@RequestHeader("X-User-Id") Long userId,
                                                                        @PathVariable Long addressId);
 }

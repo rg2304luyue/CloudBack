@@ -1,0 +1,46 @@
+package org.cloudback.product.controller;
+
+import lombok.RequiredArgsConstructor;
+import org.cloudback.common.result.R;
+import org.cloudback.product.model.entity.Product;
+import org.cloudback.product.service.ProductService;
+import org.springframework.web.bind.annotation.*;
+import java.util.List;
+
+@RestController
+@RequestMapping("/seller/products")
+@RequiredArgsConstructor
+public class SellerProductController {
+
+    private final ProductService productService;
+
+    @GetMapping("/mine")
+    public R<List<Product>> getMyProducts(@RequestHeader("X-User-Id") Long userId,
+                                          @RequestParam(defaultValue = "1") Integer page,
+                                          @RequestParam(defaultValue = "20") Integer size) {
+        return productService.getMyProducts(userId, page, size);
+    }
+
+    @PostMapping
+    public R<String> addProduct(@RequestHeader("X-User-Id") Long userId,
+                                @RequestHeader("X-User-Role") String role,
+                                @RequestBody Product product) {
+        return productService.addProduct(userId, role, product);
+    }
+
+    @PutMapping("/{id}")
+    public R<String> updateProduct(@RequestHeader("X-User-Id") Long userId,
+                                   @RequestHeader("X-User-Role") String role,
+                                   @PathVariable Long id,
+                                   @RequestBody Product product) {
+        product.setId(id);
+        return productService.updateProduct(userId, role, product);
+    }
+
+    @DeleteMapping("/{id}")
+    public R<String> deleteProduct(@RequestHeader("X-User-Id") Long userId,
+                                   @RequestHeader("X-User-Role") String role,
+                                   @PathVariable Long id) {
+        return productService.deleteProduct(userId, role, id);
+    }
+}

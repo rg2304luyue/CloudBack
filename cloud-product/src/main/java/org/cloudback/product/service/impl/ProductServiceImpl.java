@@ -159,7 +159,7 @@ public class ProductServiceImpl implements ProductService {
             return productMapper.selectList(wrapper).stream()
                     .map(Product::getId)
                     .collect(Collectors.toList());
-        }, 300);
+        }, 120);
 
         if (allIds == null || allIds.isEmpty()) {
             return R.ok(Collections.emptyList(), 0);
@@ -383,6 +383,7 @@ public class ProductServiceImpl implements ProductService {
             @Override
             public void afterCommit() {
                 productDetailTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:detail:" + productId);
+                hotProductsTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:hot");
             }
         });
         return R.ok("扣减库存成功");
@@ -398,6 +399,7 @@ public class ProductServiceImpl implements ProductService {
             @Override
             public void afterCommit() {
                 productDetailTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:detail:" + productId);
+                hotProductsTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:hot");
             }
         });
         return R.ok("回滚库存成功");

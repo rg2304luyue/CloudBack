@@ -17,14 +17,14 @@ import org.springframework.web.bind.annotation.RequestParam;
 public interface ProductFeignClient {
 
     /** 扣减商品库存 */
-    @PutMapping("/product/stock/deduct/{id}")
+    @PutMapping("/products/stock/deduct/{id}")
     R<String> deductStock(@PathVariable Long id, @RequestParam Integer quantity);
 
     /** 回滚商品库存（取消订单/支付超时） */
-    @PutMapping("/product/stock/restore/{id}")
+    @PutMapping("/products/stock/restore/{id}")
     R<String> restoreStock(@PathVariable Long id, @RequestParam Integer quantity);
 
     /** 获取商品基本信息（名称和图片） */
-    @GetMapping("/product/detail/{id}")
+    @GetMapping("/product/{id}")
     R<ProductDTO> getProductDetail(@PathVariable Long id);
 }

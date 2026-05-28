@@ -24,7 +24,7 @@ import java.util.UUID;
  */
 @Slf4j
 @RestController
-@RequestMapping("/product")
+@RequestMapping("/products")
 @RequiredArgsConstructor
 public class ProductController {
 
@@ -37,38 +37,10 @@ public class ProductController {
     @Value("${minio.endpoint}")
     private String endpoint;
 
-    /** 获取分类树 */
-    @GetMapping("/category")
-    public R<List<Category>> getCategoryTree() {
-        return productService.getCategoryTree();
-    }
-
-    /** 添加分类 */
-    @PostMapping("/category")
-    public R<String> addCategory(@RequestHeader("X-User-Id") Long userId,
-                                 @RequestHeader("X-User-Role") String role,
-                                 @RequestBody Category category) {
-        return productService.addCategory(userId, role, category);
-    }
-
-    /** 修改分类 */
-    @PutMapping("/category")
-    public R<String> updateCategory(@RequestHeader("X-User-Id") Long userId,
-                                    @RequestHeader("X-User-Role") String role,
-                                    @RequestBody Category category) {
-        return productService.updateCategory(userId, role, category);
-    }
-
-    /** 删除分类 */
-    @DeleteMapping("/category/{id}")
-    public R<String> deleteCategory(@RequestHeader("X-User-Id") Long userId,
-                                    @RequestHeader("X-User-Role") String role,
-                                    @PathVariable Long id) {
-        return productService.deleteCategory(userId, role, id);
-    }
+    // ===== 公共查询 =====
 
     /** 获取商品详情 */
-    @GetMapping("/detail/{id}")
+    @GetMapping("/{id}")
     public R<Product> getProductDetail(@PathVariable Long id) {
         return productService.getProductDetail(id);
     }
@@ -80,7 +52,7 @@ public class ProductController {
     }
 
     /** 分页搜索商品列表 */
-    @GetMapping("/list")
+    @GetMapping
     public R<List<Product>> getProductList(@RequestParam(required = false) Long categoryId,
                                            @RequestParam(defaultValue = "1") Integer page,
                                            @RequestParam(defaultValue = "10") Integer size,
@@ -89,37 +61,7 @@ public class ProductController {
         return productService.getProductList(categoryId, page, size, keyword, sortBy);
     }
 
-    /** 卖家查看自己的商品 */
-    @GetMapping("/my-list")
-    public R<List<Product>> getMyProducts(@RequestHeader("X-User-Id") Long userId,
-                                          @RequestParam(defaultValue = "1") Integer page,
-                                          @RequestParam(defaultValue = "20") Integer size) {
-        return productService.getMyProducts(userId, page, size);
-    }
-
-    /** 添加商品 */
-    @PostMapping
-    public R<String> addProduct(@RequestHeader("X-User-Id") Long userId,
-                                @RequestHeader("X-User-Role") String role,
-                                @RequestBody Product product) {
-        return productService.addProduct(userId, role, product);
-    }
-
-    /** 修改商品 */
-    @PutMapping
-    public R<String> updateProduct(@RequestHeader("X-User-Id") Long userId,
-                                   @RequestHeader("X-User-Role") String role,
-                                   @RequestBody Product product) {
-        return productService.updateProduct(userId, role, product);
-    }
-
-    /** 删除商品 */
-    @DeleteMapping("/{id}")
-    public R<String> deleteProduct(@RequestHeader("X-User-Id") Long userId,
-                                   @RequestHeader("X-User-Role") String role,
-                                   @PathVariable Long id) {
-        return productService.deleteProduct(userId, role, id);
-    }
+    // ===== feign服务 =====
 
     /** 扣减库存（供订单服务 Feign 内部调用） */
     @PutMapping("/stock/deduct/{id}")
@@ -135,19 +77,7 @@ public class ProductController {
         return productService.restoreStock(id, quantity);
     }
 
-    /** 管理员：获取待审核商品 */
-    @GetMapping("/admin/pending")
-    public R<List<Product>> getPendingProducts(@RequestParam(defaultValue = "1") Long page,
-                                               @RequestParam(defaultValue = "20") Long size) {
-        return productService.getPendingProducts(page, size);
-    }
-
-    /** 管理员：审核商品 */
-    @PutMapping("/admin/review/{id}")
-    public R<String> reviewProduct(@PathVariable Long id,
-                                   @RequestParam boolean approved) {
-        return productService.reviewProduct(id, approved);
-    }
+    // ===== 图片上传 =====
 
     /** 上传图片到 MinIO，返回可访问的 URL */
     @PostMapping("/upload")
