@@ -128,6 +128,13 @@ public class ProductController {
         return productService.deductStock(id, quantity);
     }
 
+    /** 回滚库存（供订单服务取消订单/支付超时 Feign 内部调用） */
+    @PutMapping("/stock/restore/{id}")
+    public R<String> restoreStock(@PathVariable Long id,
+                                  @RequestParam Integer quantity) {
+        return productService.restoreStock(id, quantity);
+    }
+
     /** 管理员：获取待审核商品 */
     @GetMapping("/admin/pending")
     public R<List<Product>> getPendingProducts(@RequestParam(defaultValue = "1") Long page,

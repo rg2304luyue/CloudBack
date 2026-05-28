@@ -1,11 +1,13 @@
 package org.cloudback.order.model.entity;
 
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import org.cloudback.common.entity.BaseEntity;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 
 /**
  * 订单实体，映射 order_info 表。
@@ -37,4 +39,8 @@ public class Order extends BaseEntity {
     private String remark;
     /** 支付时间 */
     private LocalDateTime payTime;
+
+    /** 订单明细列表（非数据库字段，查询时填充） */
+    @TableField(exist = false)
+    private List<OrderItem> orderItems;
 }

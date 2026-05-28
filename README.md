@@ -246,7 +246,7 @@ CORS 通过 `CorsConfig`（WebFlux `CorsWebFilter`）全局允许所有来源。
 |---|---|---|---|
 | cloud-cart | `ProductFeignClient` | cloud-product | `GET /product/detail/{id}` |
 | cloud-order | `CartFeignClient` | cloud-cart | `GET /cart/checked`、`DELETE /cart/clear` |
-| cloud-order | `ProductFeignClient` | cloud-product | `PUT /product/stock/deduct/{id}`、`GET /product/detail/{id}` |
+| cloud-order | `ProductFeignClient` | cloud-product | `PUT /product/stock/deduct/{id}`、`PUT /product/stock/restore/{id}`、`GET /product/detail/{id}` |
 | cloud-order | `UserFeignClient` | cloud-user | `GET /user/address/{id}` |
 
 **Feign 用户上下文透传**：`cloud-order` 中的 `FeignRequestInterceptor` 实现了 `feign.RequestInterceptor`，从当前 HTTP 请求（`RequestContextHolder`）提取 `X-User-Id`、`X-Username`、`X-User-Role`，自动注入到每个 Feign 请求头，确保下游服务能识别调用方身份。
@@ -393,7 +393,8 @@ Step 5: INSERT order_item × N（orderItemMapper.insert）
   - 每条记录保存商品名称/图片/价格快照
 
 Step 6: Feign → ProductFeignClient.deductStock() × N
-  - 扣减库存 + 增加销量（product 服务内 @Transactional）
+  - 原子 SQL 扣减：UPDATE product SET stock = stock - ?, sales = sales + ?
+    WHERE id = ? AND stock >= ?（WHERE 条件防超卖）
   - 任一失败 → 抛出异常 → 整个 createOrder 回滚
 
 Step 7: Feign → CartFeignClient.clearCart()
@@ -464,6 +465,8 @@ PUT /api/order/cancel/{id}
   2. 检查 status == UNPAID（只有待支付可取消）
      → 否则 BusinessException "只能取消待支付的订单"
   3. UPDATE order_info SET status = 4 (CANCELLED)
+  4. 查询订单明细 (order_item)
+  5. 逐项调用 ProductFeignClient.restoreStock() 回滚库存和销量
 ```
 
 ### 8. 申请成为卖家
@@ -573,7 +576,8 @@ PUT /api/user/admin/reset-password?targetUserId=&newPassword=
 | GET | `/api/product/admin/pending` | product | 是 | 管理员-待审核商品 |
 | PUT | `/api/product/admin/review/{id}` | product | 是 | 管理员-审批商品 |
 | POST | `/api/product/upload` | product | 是 | 上传商品图片到 MinIO |
-| PUT | `/api/product/stock/deduct/{id}` | product | 内部 | Feign 扣库存 |
+| PUT | `/api/product/stock/deduct/{id}` | product | 内部 | Feign 原子扣库存（WHERE stock >= ?） |
+| PUT | `/api/product/stock/restore/{id}` | product | 内部 | Feign 回滚库存（取消订单时调用） |
 | GET | `/api/cart/list` | cart | 是 | 购物车列表 |
 | POST | `/api/cart/add` | cart | 是 | 加入购物车 |
 | PUT | `/api/cart/quantity` | cart | 是 | 修改数量 |
@@ -583,7 +587,7 @@ PUT /api/user/admin/reset-password?targetUserId=&newPassword=
 | GET | `/api/cart/checked` | cart | 内部 | Feign 获取勾选商品 |
 | POST | `/api/order/create` | order | 是 | 创建订单 |
 | GET | `/api/order/list` | order | 是 | 订单列表 |
-| GET | `/api/order/detail/{id}` | order | 是 | 订单详情 |
+| GET | `/api/order/detail/{id}` | order | 是 | 订单详情（含订单明细 orderItems） |
 | PUT | `/api/order/cancel/{id}` | order | 是 | 取消订单 |
 | POST | `/api/payment/pay/{orderNo}` | payment | 是 | 发起支付宝页面支付，返回支付表单 |
 | POST | `/api/payment/notify/alipay` | payment | 否 | 支付宝异步通知回调 |

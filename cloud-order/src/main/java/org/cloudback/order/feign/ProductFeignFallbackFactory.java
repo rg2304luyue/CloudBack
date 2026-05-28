@@ -22,6 +22,11 @@ public class ProductFeignFallbackFactory implements FallbackFactory<ProductFeign
             public R<String> deductStock(Long id, Integer quantity) {
                 return R.fail(ResultCode.SERVICE_UNAVAILABLE);
             }
+
+            @Override
+            public R<String> restoreStock(Long id, Integer quantity) {
+                return R.fail(ResultCode.SERVICE_UNAVAILABLE);
+            }
         };
     }
 }

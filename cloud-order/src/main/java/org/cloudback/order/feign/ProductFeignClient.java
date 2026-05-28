@@ -20,6 +20,10 @@ public interface ProductFeignClient {
     @PutMapping("/product/stock/deduct/{id}")
     R<String> deductStock(@PathVariable Long id, @RequestParam Integer quantity);
 
+    /** 回滚商品库存（取消订单/支付超时） */
+    @PutMapping("/product/stock/restore/{id}")
+    R<String> restoreStock(@PathVariable Long id, @RequestParam Integer quantity);
+
     /** 获取商品基本信息（名称和图片） */
     @GetMapping("/product/detail/{id}")
     R<ProductDTO> getProductDetail(@PathVariable Long id);

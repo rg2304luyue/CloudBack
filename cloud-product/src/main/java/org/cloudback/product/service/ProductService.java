@@ -43,8 +43,11 @@ public interface ProductService {
     /** 删除商品（逻辑删除） */
     R<String> deleteProduct(Long userId, String role, Long id);
 
-    /** 扣减库存，同时增加销量，带事务保护 */
+    /** 扣减库存，同时增加销量，原子 UPDATE 防超卖 */
     R<String> deductStock(Long productId, Integer quantity);
+
+    /** 回滚库存（取消订单/支付超时），同时减少销量 */
+    R<String> restoreStock(Long productId, Integer quantity);
 
     /** 管理员：获取待审核商品列表 */
     R<List<Product>> getPendingProducts(Long page, Long size);

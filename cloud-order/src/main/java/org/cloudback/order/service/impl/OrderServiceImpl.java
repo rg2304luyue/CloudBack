@@ -155,13 +155,16 @@ public class OrderServiceImpl implements OrderService {
         return R.ok("下单成功", order);
     }
 
-    /** 查询订单详情，校验 userId 防越权 */
+    /** 查询订单详情（含订单明细），校验 userId 防越权 */
     @Override
     public R<Order> getOrderDetail(Long userId, Long orderId) {
         Order order = orderMapper.selectById(orderId);
         if (order == null || !order.getUserId().equals(userId)) {
             throw new BusinessException(ResultCode.ORDER_NOT_EXIST);
         }
+        List<OrderItem> items = orderItemMapper.selectList(
+                new LambdaQueryWrapper<OrderItem>().eq(OrderItem::getOrderId, orderId));
+        order.setOrderItems(items);
         return R.ok(order);
     }
 
@@ -173,10 +176,10 @@ public class OrderServiceImpl implements OrderService {
                 .orderByDesc(Order::getCreateTime);
         Page<Order> orderPage = new Page<>(page, size);
         orderMapper.selectPage(orderPage, wrapper);
-        return R.ok(orderPage.getRecords());
+        return R.ok(orderPage.getRecords(), (int) orderPage.getTotal());
     }
 
-    /** 取消订单，仅待支付状态可取消 */
+    /** 取消订单，仅待支付状态可取消，同时回滚库存 */
     @Override
     @Transactional(rollbackFor = Exception.class)
     public R<String> cancelOrder(Long userId, Long orderId) {
@@ -190,6 +193,14 @@ public class OrderServiceImpl implements OrderService {
 
         order.setStatus(SystemConstants.ORDER_STATUS_CANCELLED);
         orderMapper.updateById(order);
+
+        // 回滚库存：查询订单明细，逐个恢复库存和销量
+        List<OrderItem> items = orderItemMapper.selectList(
+                new LambdaQueryWrapper<OrderItem>().eq(OrderItem::getOrderId, orderId));
+        for (OrderItem item : items) {
+            productFeignClient.restoreStock(item.getProductId(), item.getQuantity());
+        }
+
         return R.ok("订单已取消");
     }
 }

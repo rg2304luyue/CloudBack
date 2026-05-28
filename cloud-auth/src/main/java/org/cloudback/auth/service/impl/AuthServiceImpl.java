@@ -63,7 +63,7 @@ public class AuthServiceImpl implements AuthService {
             throw new BusinessException(ResultCode.USERNAME_OR_PASSWORD_ERROR);
         }
 
-        if (user.getStatus().equals(SystemConstants.USER_STATUS_DISABLED)) {
+        if (SystemConstants.USER_STATUS_DISABLED.equals(user.getStatus())) {
             throw new BusinessException("账号已被禁用");
         }
 

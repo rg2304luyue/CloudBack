@@ -202,7 +202,7 @@ public class ProductServiceImpl implements ProductService {
         wrapper.orderByDesc(Product::getCreateTime);
         Page<Product> productPage = new Page<>(page, size);
         productMapper.selectPage(productPage, wrapper);
-        return R.ok(productPage.getRecords());
+        return R.ok(productPage.getRecords(), (int) productPage.getTotal());
     }
 
     @Override
@@ -267,7 +267,7 @@ public class ProductServiceImpl implements ProductService {
                .orderByAsc(Product::getCreateTime);
         Page<Product> productPage = new Page<>(page, size);
         productMapper.selectPage(productPage, wrapper);
-        return R.ok(productPage.getRecords());
+        return R.ok(productPage.getRecords(), (int) productPage.getTotal());
     }
 
     @Override
@@ -365,31 +365,42 @@ public class ProductServiceImpl implements ProductService {
 
     // ==================== 库存 ====================
 
-    /** 扣减库存，@Transactional 确保原子性；同时增加销量 */
+    /** 原子扣减库存，UPDATE WHERE stock >= quantity 防止超卖 */
     @Override
     @Transactional(rollbackFor = Exception.class)
     public R<String> deductStock(Long productId, Integer quantity) {
-        Product product = productMapper.selectById(productId);
-        if (product == null) {
-            throw new BusinessException(ResultCode.PRODUCT_NOT_EXIST);
-        }
-        if (product.getStock() < quantity) {
+        int affected = productMapper.deductStockAtomically(productId, quantity);
+        if (affected == 0) {
+            // 可能是商品不存在或库存不足，回查确认原因
+            Product product = productMapper.selectById(productId);
+            if (product == null) {
+                throw new BusinessException(ResultCode.PRODUCT_NOT_EXIST);
+            }
             throw new BusinessException(ResultCode.STOCK_INSUFFICIENT);
         }
 
-        product.setStock(product.getStock() - quantity);
-        product.setSales(product.getSales() + quantity);
-        productMapper.updateById(product);
-
-        // 在事务commit后提交缓存
-        String cacheKey = SystemConstants.REDIS_KEY_PREFIX + "product:detail:" + productId;
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
-                productDetailTwoLevel.evict(cacheKey);
+                productDetailTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:detail:" + productId);
             }
         });
         return R.ok("扣减库存成功");
+    }
+
+    /** 原子回滚库存（取消订单/支付超时），同时减少销量 */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public R<String> restoreStock(Long productId, Integer quantity) {
+        productMapper.restoreStock(productId, quantity);
+
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                productDetailTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:detail:" + productId);
+            }
+        });
+        return R.ok("回滚库存成功");
     }
 
     @PostConstruct
