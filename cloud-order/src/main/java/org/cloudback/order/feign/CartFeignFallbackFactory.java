@@ -5,6 +5,7 @@ import org.cloudback.common.result.R;
 import org.cloudback.common.result.ResultCode;
 import org.springframework.cloud.openfeign.FallbackFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.web.bind.annotation.RequestHeader;
 
 import java.util.List;
 
@@ -16,12 +17,12 @@ public class CartFeignFallbackFactory implements FallbackFactory<CartFeignClient
         log.error("CartFeignClient 调用失败，触发熔断降级", cause);
         return new CartFeignClient() {
             @Override
-            public R<List<CartItemDTO>> getCheckedItems() {
+            public R<List<CartItemDTO>> getCheckedItems(@RequestHeader("X-User-Id") Long userId) {
                 return R.fail(ResultCode.SERVICE_UNAVAILABLE);
             }
 
             @Override
-            public R<String> clearCart() {
+            public R<String> clearCart(@RequestHeader("X-User-Id") Long userId) {
                 return R.fail(ResultCode.SERVICE_UNAVAILABLE);
             }
         };

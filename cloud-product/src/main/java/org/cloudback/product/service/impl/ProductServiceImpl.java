@@ -16,6 +16,7 @@ import org.cloudback.product.mapper.CategoryMapper;
 import org.cloudback.product.mapper.ProductMapper;
 import org.cloudback.product.model.entity.Category;
 import org.cloudback.product.model.entity.Product;
+import org.cloudback.product.dto.ProductRequest;
 import org.cloudback.product.service.ProductService;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
@@ -76,14 +77,14 @@ public class ProductServiceImpl implements ProductService {
     }
 
     @Override
-    public R<String> addCategory(Long userId, String role, Category category) {
+    public R<String> addCategory(String role, Category category) {
         checkProductManagePermission(role);
         categoryMapper.insert(category);
         return R.ok("添加分类成功");
     }
 
     @Override
-    public R<String> updateCategory(Long userId, String role, Category category) {
+    public R<String> updateCategory(String role, Category category) {
         checkProductManagePermission(role);
         Category dbCategory = categoryMapper.selectById(category.getId());
         if (dbCategory == null) {
@@ -94,7 +95,7 @@ public class ProductServiceImpl implements ProductService {
     }
 
     @Override
-    public R<String> deleteCategory(Long userId, String role, Long id) {
+    public R<String> deleteCategory(String role, Long id) {
         checkProductManagePermission(role);
         Long childCount = categoryMapper.selectCount(
                 new LambdaQueryWrapper<Category>().eq(Category::getParentId, id));
@@ -206,39 +207,51 @@ public class ProductServiceImpl implements ProductService {
     }
 
     @Override
-    public R<String> addProduct(Long userId, String role, Product product) {
+    public R<String> addProduct(Long userId, String role, ProductRequest request) {
         checkProductManagePermission(role);
+        Product product = new Product();
+        product.setCategoryId(request.categoryId());
+        product.setName(request.name());
+        product.setDescription(request.description());
+        product.setPrice(request.price());
+        product.setStock(request.stock());
+        product.setMainImage(request.mainImage());
+        product.setImages(request.images());
         product.setSellerId(userId);
         product.setSales(0);
-        // 卖家提交需要审核，管理员直接上架
         product.setStatus(SystemConstants.ROLE_ADMIN.equals(role) ? 1 : SystemConstants.PRODUCT_STATUS_PENDING);
-        productMapper.insert(product);
-        // 注册到布隆过滤器
-        bloomFilter.addProductId(product.getId());
 
-        // 新增商品后，列表和热门缓存应失效
+        productMapper.insert(product);
+        bloomFilter.addProductId(product.getId());
         hotProductsTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:hot");
         return R.ok(SystemConstants.ROLE_ADMIN.equals(role) ? "添加商品成功" : "添加成功，等待管理员审核");
     }
 
     @Override
-    public R<String> updateProduct(Long userId, String role, Product product) {
+    public R<String> updateProduct(Long userId, String role, Long id, ProductRequest request) {
         checkProductManagePermission(role);
-        Product dbProduct = productMapper.selectById(product.getId());
+        Product dbProduct = productMapper.selectById(id);
         if (dbProduct == null) {
             throw new BusinessException(ResultCode.PRODUCT_NOT_EXIST);
         }
         checkProductPermission(userId, role, dbProduct);
+        Product product = new Product();
+        product.setId(id);
+        product.setCategoryId(request.categoryId());
+        product.setName(request.name());
+        product.setDescription(request.description());
+        product.setPrice(request.price());
+        product.setStock(request.stock());
+        product.setMainImage(request.mainImage());
+        product.setImages(request.images());
         product.setSellerId(dbProduct.getSellerId());
-        // 卖家修改后重新进入待审核
         if (SystemConstants.ROLE_SELLER.equals(role)) {
             product.setStatus(SystemConstants.PRODUCT_STATUS_PENDING);
         }
-        productMapper.updateById(product);
 
-        // 更新商品后，列表和热门缓存应失效
+        productMapper.updateById(product);
         hotProductsTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:hot");
-        productDetailTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:detail:" + product.getId());
+        productDetailTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:detail:" + id);
         return R.ok(SystemConstants.ROLE_SELLER.equals(role) ? "已重新提交审核" : "更新商品成功");
     }
 

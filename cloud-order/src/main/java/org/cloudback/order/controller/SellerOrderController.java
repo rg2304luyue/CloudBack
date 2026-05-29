@@ -23,7 +23,7 @@ public class SellerOrderController {
     }
 
     /** 卖家发货（已支付 → 已发货） */
-    @PutMapping("/{id}/ship")
+    @PatchMapping("/{id}/ship")
     public R<String> shipOrder(@RequestHeader("X-User-Id") Long sellerId,
                                @PathVariable Long id) {
         return orderService.shipOrder(sellerId, id);

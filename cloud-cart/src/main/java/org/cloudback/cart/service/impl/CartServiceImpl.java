@@ -80,8 +80,7 @@ public class CartServiceImpl implements CartService {
         }
 
         redisTemplate.expire(key, CART_TTL_DAYS, TimeUnit.DAYS);
-        cartTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "cart:cache:" + userId);
-        cartTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "cart:cache:checked:" + userId);
+        evictCartCache(userId);
         return R.ok("添加购物车成功");
     }
 
@@ -100,8 +99,7 @@ public class CartServiceImpl implements CartService {
         cartItem.setQuantity(quantity);
         redisTemplate.opsForHash().put(key, field, JSON.toJSONString(cartItem));
         redisTemplate.expire(key, CART_TTL_DAYS, TimeUnit.DAYS);
-        cartTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "cart:cache:" + userId);
-        cartTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "cart:cache:checked:" + userId);
+        evictCartCache(userId);
         return R.ok("更新数量成功");
     }
 
@@ -109,8 +107,7 @@ public class CartServiceImpl implements CartService {
     @Override
     public R<String> removeItem(Long userId, Long productId) {
         redisTemplate.opsForHash().delete(cartKey(userId), String.valueOf(productId));
-        cartTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "cart:cache:" + userId);
-        cartTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "cart:cache:checked:" + userId);
+        evictCartCache(userId);
         return R.ok("移除成功");
     }
 
@@ -128,8 +125,7 @@ public class CartServiceImpl implements CartService {
         CartItem cartItem = JSON.parseObject(existing.toString(), CartItem.class);
         cartItem.setChecked(checked);
         redisTemplate.opsForHash().put(key, field, JSON.toJSONString(cartItem));
-        cartTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "cart:cache:" + userId);
-        cartTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "cart:cache:checked:" + userId);
+        evictCartCache(userId);
         return R.ok(checked ? "已勾选" : "已取消勾选");
     }
 
@@ -137,8 +133,7 @@ public class CartServiceImpl implements CartService {
     @Override
     public R<String> clearCart(Long userId) {
         redisTemplate.delete(cartKey(userId));
-        cartTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "cart:cache:" + userId);
-        cartTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "cart:cache:checked:" + userId);
+        evictCartCache(userId);
         return R.ok("购物车已清空");
     }
 
@@ -178,5 +173,10 @@ public class CartServiceImpl implements CartService {
         }, 300);
 
         return R.ok(items != null ? items : Collections.emptyList());
+    }
+
+    private void evictCartCache(Long userId) {
+        cartTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "cart:cache:" + userId);
+        cartTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "cart:cache:checked:" + userId);
     }
 }

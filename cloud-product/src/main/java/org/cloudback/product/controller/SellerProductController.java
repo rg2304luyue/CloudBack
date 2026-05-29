@@ -2,6 +2,7 @@ package org.cloudback.product.controller;
 
 import lombok.RequiredArgsConstructor;
 import org.cloudback.common.result.R;
+import org.cloudback.product.dto.ProductRequest;
 import org.cloudback.product.model.entity.Product;
 import org.cloudback.product.service.ProductService;
 import org.springframework.web.bind.annotation.*;
@@ -24,17 +25,16 @@ public class SellerProductController {
     @PostMapping
     public R<String> addProduct(@RequestHeader("X-User-Id") Long userId,
                                 @RequestHeader("X-User-Role") String role,
-                                @RequestBody Product product) {
-        return productService.addProduct(userId, role, product);
+                                @RequestBody ProductRequest request) {
+        return productService.addProduct(userId, role, request);
     }
 
     @PutMapping("/{id}")
     public R<String> updateProduct(@RequestHeader("X-User-Id") Long userId,
                                    @RequestHeader("X-User-Role") String role,
                                    @PathVariable Long id,
-                                   @RequestBody Product product) {
-        product.setId(id);
-        return productService.updateProduct(userId, role, product);
+                                   @RequestBody ProductRequest request) {
+        return productService.updateProduct(userId, role, id, request);
     }
 
     @DeleteMapping("/{id}")

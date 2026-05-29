@@ -7,8 +7,6 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.cloudback.common.constant.SystemConstants;
-import org.springframework.transaction.support.TransactionSynchronization;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.cloudback.common.exception.BusinessException;
 import org.cloudback.common.result.R;
 import org.cloudback.common.result.ResultCode;
@@ -32,11 +30,14 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+import java.util.UUID;
+import java.util.concurrent.TimeUnit;
+import org.springframework.data.redis.core.RedisTemplate;
 
 /**
  * 订单服务实现，处理下单全流程。
  * 流程: 获取购物车勾选商品 → 扣减库存 → 查询地址 → 创建订单及明细 → 清空购物车 → Kafka 通知支付
- * 整个过程由 @Transactional 保护，任一步骤失败则全部回滚。
+ * 整个过程由 @Transactional 保护，任何一个步骤失败则全部回滚。
  *
  * @author CloudBack
  * @since 2025-05-17
@@ -52,12 +53,23 @@ public class OrderServiceImpl implements OrderService {
     private final ProductFeignClient productFeignClient;
     private final UserFeignClient userFeignClient;
     private final KafkaTemplate<String, String> kafkaTemplate;
+    private final RedisTemplate<String, Object> redisTemplate;
 
-    /** 创建订单：先写订单后扣库存，避免订单入库失败而库存已被扣减 */
+    /** 创建订单：先扣库存（Feign），成功后再写订单；订单写入失败则回滚库存 */
     @Override
-    @Transactional(rollbackFor = Exception.class)
-    public R<Order> createOrder(Long userId, Long addressId, String remark) {
-        R<List<CartItemDTO>> cartResult = cartFeignClient.getCheckedItems();
+    public R<Order> createOrder(Long userId, Long addressId, String remark, String orderToken) {
+        // 幂等性校验：利用 Redis DEL 原子操作消费 token
+        String tokenKey = "cloud:order:token:" + userId;
+        String storedToken = (String) redisTemplate.opsForValue().get(tokenKey);
+        if (storedToken == null) {
+            throw new BusinessException("请勿重复提交订单");
+        }
+        if (!storedToken.equals(orderToken)) {
+            throw new BusinessException("下单令牌无效");
+        }
+        redisTemplate.delete(tokenKey);
+
+        R<List<CartItemDTO>> cartResult = cartFeignClient.getCheckedItems(userId);
         if (cartResult.getData() == null || cartResult.getData().isEmpty()) {
             throw new BusinessException("购物车中没有已勾选的商品");
         }
@@ -115,45 +127,54 @@ public class OrderServiceImpl implements OrderService {
                 order.setReceiverName((String) addr.get("receiverName"));
                 order.setReceiverPhone((String) addr.get("phone"));
                 String fullAddress = addr.get("province").toString() + addr.get("city").toString() +
-                                     addr.get("district").toString() + addr.get("detail").toString();
+                        addr.get("district").toString() + addr.get("detail").toString();
                 order.setReceiverAddress(fullAddress);
             }
         }
 
-        // 先写订单和明细，确保订单入库成功
-        orderMapper.insert(order);
-        for (OrderItem item : orderItems) {
-            item.setOrderId(order.getId());
-            orderItemMapper.insert(item);
-        }
-
-        // 订单写成功再扣库存，若失败则回滚订单
-        for (CartItemDTO item : checkedItems) {
-            R<String> stockResult = productFeignClient.deductStock(item.getProductId(), item.getQuantity());
-            if (stockResult.getCode() != 200) {
-                throw new BusinessException(stockResult.getCode(), stockResult.getMessage());
+        // 先扣库存，全部成功后再写订单；若任一扣减失败，回滚已扣的库存
+        List<CartItemDTO> deductedItems = new ArrayList<>();
+        try {
+            for (CartItemDTO item : checkedItems) {
+                R<String> stockResult = productFeignClient.deductStock(item.getProductId(), item.getQuantity());
+                if (stockResult.getCode() != 200) {
+                    throw new BusinessException(stockResult.getCode(), stockResult.getMessage());
+                }
+                deductedItems.add(item);
             }
-        }
 
-        cartFeignClient.clearCart();
+            // 库存扣减成功后写入订单和明细
+            saveOrderAndItems(order, orderItems);
 
-        Map<String, Object> kafkaMsg = new HashMap<>();
-        kafkaMsg.put("orderId", order.getId());
-        kafkaMsg.put("orderNo", orderNo);
-        kafkaMsg.put("userId", userId);
-        kafkaMsg.put("totalAmount", totalAmount);
-        kafkaMsg.put("createTime", order.getCreateTime().toString());
+            cartFeignClient.clearCart(userId);
 
-        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-            @Override
-            public void afterCommit() {
-                kafkaTemplate.send(SystemConstants.KAFKA_TOPIC_ORDER_CREATE, JSON.toJSONString(kafkaMsg));
-                log.info("Kafka 消息已发送: orderNo={}", orderNo);
+            Map<String, Object> kafkaMsg = new HashMap<>();
+            kafkaMsg.put("orderId", order.getId());
+            kafkaMsg.put("orderNo", orderNo);
+            kafkaMsg.put("userId", userId);
+            kafkaMsg.put("totalAmount", totalAmount);
+            kafkaMsg.put("createTime", order.getCreateTime().toString());
+            kafkaTemplate.send(SystemConstants.KAFKA_TOPIC_ORDER_CREATE, JSON.toJSONString(kafkaMsg));
+            log.info("Kafka 消息已发送: orderNo={}", orderNo);
+
+            // 写入 ZSet 用于超时自动取消
+            String timeoutKey = "cloud:order:timeout";
+            long expireTime = System.currentTimeMillis() + 30 * 60 * 1000;
+            redisTemplate.opsForZSet().add(timeoutKey, orderNo, expireTime);
+
+            log.info("订单创建成功: orderNo={}, totalAmount={}", orderNo, totalAmount);
+            return R.ok("下单成功", order);
+        } catch (Exception e) {
+            // 订单写入失败或后续步骤失败 → 回滚所有已扣库存
+            for (CartItemDTO item : deductedItems) {
+                try {
+                    productFeignClient.restoreStock(item.getProductId(), item.getQuantity());
+                } catch (Exception ex) {
+                    log.error("回滚库存失败: productId={}", item.getProductId(), ex);
+                }
             }
-        });
-
-        log.info("订单创建成功: orderNo={}, totalAmount={}", orderNo, totalAmount);
-        return R.ok("下单成功", order);
+            throw e instanceof BusinessException ? (BusinessException) e : new BusinessException(e.getMessage());
+        }
     }
 
     /** 查询订单详情（含订单明细），校验 userId 防越权 */
@@ -180,7 +201,6 @@ public class OrderServiceImpl implements OrderService {
         return R.ok(orderPage.getRecords(), (int) orderPage.getTotal());
     }
 
-    /** 取消订单，仅待支付状态可取消，同时回滚库存 */
     @Override
     @Transactional(rollbackFor = Exception.class)
     public R<String> cancelOrder(Long userId, Long orderId) {
@@ -191,35 +211,50 @@ public class OrderServiceImpl implements OrderService {
         if (!order.getStatus().equals(SystemConstants.ORDER_STATUS_UNPAID)) {
             throw new BusinessException(ResultCode.ORDER_STATUS_ERROR.getCode(), "只能取消待支付的订单");
         }
+        doCancelOrder(order);
+        return R.ok("订单已取消");
+    }
 
+    /** 按 orderNo 取消订单（供超时调度器调用） */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void cancelOrderByNo(String orderNo) {
+        LambdaQueryWrapper<Order> wrapper = new LambdaQueryWrapper<Order>()
+                .eq(Order::getOrderNo, orderNo);
+        Order order = orderMapper.selectOne(wrapper);
+        if (order == null || !order.getStatus().equals(SystemConstants.ORDER_STATUS_UNPAID)) {
+            return;
+        }
+        doCancelOrder(order);
+    }
+
+    /** 取消订单的公共逻辑：改状态 + 回滚库存 + 移除 ZSet */
+    private void doCancelOrder(Order order) {
         order.setStatus(SystemConstants.ORDER_STATUS_CANCELLED);
         orderMapper.updateById(order);
 
-        // 回滚库存：查询订单明细，逐个恢复库存和销量
         List<OrderItem> items = orderItemMapper.selectList(
-                new LambdaQueryWrapper<OrderItem>().eq(OrderItem::getOrderId, orderId));
+                new LambdaQueryWrapper<OrderItem>().eq(OrderItem::getOrderId, order.getId()));
         for (OrderItem item : items) {
             productFeignClient.restoreStock(item.getProductId(), item.getQuantity());
         }
 
-        return R.ok("订单已取消");
+        redisTemplate.opsForZSet().remove("cloud:order:timeout", order.getOrderNo());
     }
 
+    @Transactional(rollbackFor = Exception.class)
+    protected void saveOrderAndItems(Order order, List<OrderItem> orderItems) {
+        orderMapper.insert(order);
+        for (OrderItem item : orderItems) {
+            item.setOrderId(order.getId());
+            orderItemMapper.insert(item);
+        }
+    }
     // ==================== 卖家订单 ====================
 
     /** 查询包含某卖家商品的订单（通过 order_item 表关联） */
     @Override
     public R<List<Order>> getSellerOrders(Long sellerId, Integer page, Integer size) {
-        // 1. 查出包含该卖家商品的 order_id 列表（去重）
-        LambdaQueryWrapper<OrderItem> itemWrapper = new LambdaQueryWrapper<OrderItem>()
-                .eq(OrderItem::getProductId, sellerId) // 注意：这里需要用子查询或自定义SQL
-                .select(OrderItem::getOrderId);
-        // 上面的写法不对，order_item 没有 sellerId 字段
-        // 正确做法：先查该卖家的所有商品 ID，再查包含这些商品的订单
-
-        // 使用自定义查询：先从 product 服务获取卖家商品 ID 列表
-        // 简化方案：直接在 order_item 上按 productId IN (...) 查询
-        // 需要先通过 Feign 获取卖家的商品 ID 列表
         List<Long> sellerProductIds;
         try {
             R<List<ProductDTO>> productResult = productFeignClient.getProductsBySellerId(sellerId);
@@ -318,5 +353,14 @@ public class OrderServiceImpl implements OrderService {
         order.setStatus(SystemConstants.ORDER_STATUS_COMPLETED);
         orderMapper.updateById(order);
         return R.ok("已确认收货");
+    }
+
+    /** 生成下单幂等 Token，存入 Redis，有效期 30 分钟 */
+    @Override
+    public R<String> generateOrderToken(Long userId) {
+        String token = UUID.randomUUID().toString();
+        String key = "cloud:order:token:" + userId;
+        redisTemplate.opsForValue().set(key, token, 30, TimeUnit.MINUTES);
+        return R.ok(token);
     }
 }

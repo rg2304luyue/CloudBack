@@ -30,7 +30,7 @@ public class PaymentController {
     }
 
     /** 发起支付宝页面支付，返回支付表单 HTML */
-    @PostMapping("/pay")
+    @PostMapping("/alipay")
     public R<String> pay(@RequestBody CreatePaymentRequest request,
                          @RequestHeader("X-User-Id") Long userId) {
         return paymentService.createPayForm(request.orderNo(), userId);
@@ -66,14 +66,22 @@ public class PaymentController {
             return;
         }
 
-        // 触发主动查询支付宝，若已支付则更新本地状态
+        // 主动查询支付宝，若已支付则更新本地状态
+        R<Payment> paymentResult;
         try {
-            paymentService.getPaymentByOrderNo(orderNo);
+            paymentResult = paymentService.getPaymentByOrderNo(orderNo);
         } catch (Exception e) {
             log.warn("同步回跳查询支付状态异常: orderNo={}", orderNo, e);
+            response.sendRedirect("http://localhost:4173/payment/result?error=query_failed");
+            return;
         }
 
-        String query = "orderNo=" + URLEncoder.encode(orderNo, StandardCharsets.UTF_8);
-        response.sendRedirect("http://localhost:4173/payment/result?" + query);
+        if (paymentResult.getData() != null && paymentResult.getData().getStatus() == 1) {
+            response.sendRedirect("http://localhost:4173/payment/result?orderNo="
+                    + URLEncoder.encode(orderNo, StandardCharsets.UTF_8));
+        } else {
+            response.sendRedirect("http://localhost:4173/payment/result?error=not_paid&orderNo="
+                    + URLEncoder.encode(orderNo, StandardCharsets.UTF_8));
+        }
     }
 }

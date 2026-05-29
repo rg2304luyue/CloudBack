@@ -40,7 +40,7 @@ public class AuthServiceImpl implements AuthService {
 
         User user = new User();
         user.setUsername(username);
-        user.setPassword(BCrypt.hashpw(password));
+        user.setPassword(BCrypt.hashpw(password, BCrypt.gensalt()));
         user.setNickname(nickname != null ? nickname : username);
         user.setStatus(SystemConstants.USER_STATUS_NORMAL);
         user.setRole(SystemConstants.ROLE_BUYER);

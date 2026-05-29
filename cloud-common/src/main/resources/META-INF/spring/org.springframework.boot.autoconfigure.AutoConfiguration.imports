@@ -6,3 +6,4 @@ org.cloudback.common.config.MinioConfig
 org.cloudback.common.exception.GlobalExceptionHandler
 org.cloudback.common.config.CaffeineConfig
 org.cloudback.common.config.BloomFilterService
+org.cloudback.common.config.CommonAutoConfiguration

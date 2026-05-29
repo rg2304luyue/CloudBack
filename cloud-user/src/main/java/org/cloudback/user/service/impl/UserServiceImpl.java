@@ -135,7 +135,7 @@ public class UserServiceImpl implements UserService {
         }
         User updateUser = new User();
         updateUser.setId(targetUserId);
-        updateUser.setPassword(BCrypt.hashpw(newPassword));
+        updateUser.setPassword(BCrypt.hashpw(newPassword, BCrypt.gensalt()));
         userMapper.updateById(updateUser);
         return R.ok("密码重置成功");
     }

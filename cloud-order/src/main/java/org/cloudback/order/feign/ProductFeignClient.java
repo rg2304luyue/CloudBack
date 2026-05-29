@@ -2,10 +2,7 @@ package org.cloudback.order.feign;
 
 import org.cloudback.common.result.R;
 import org.springframework.cloud.openfeign.FeignClient;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PutMapping;
-import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 
@@ -19,11 +16,11 @@ import java.util.List;
 public interface ProductFeignClient {
 
     /** 扣减商品库存 */
-    @PutMapping("/products/stock/deduct/{id}")
+    @PostMapping("/products/{id}/stock/deduct")
     R<String> deductStock(@PathVariable Long id, @RequestParam Integer quantity);
 
     /** 回滚商品库存（取消订单/支付超时） */
-    @PutMapping("/products/stock/restore/{id}")
+    @PostMapping("/products/{id}/stock/restore")
     R<String> restoreStock(@PathVariable Long id, @RequestParam Integer quantity);
 
     /** 获取商品基本信息（名称和图片） */

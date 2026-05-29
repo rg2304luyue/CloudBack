@@ -22,7 +22,7 @@ public class AdminUserController {
         return userService.getUserList(role);
     }
 
-    @PutMapping("/users/{id}/password")
+    @PatchMapping("/users/{id}/password")
     public R<String> resetPassword(@RequestHeader("X-User-Role") String role,
                                    @PathVariable Long id,
                                    @RequestBody ResetPasswordRequest request) {

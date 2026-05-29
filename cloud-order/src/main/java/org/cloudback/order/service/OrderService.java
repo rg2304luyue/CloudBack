@@ -13,7 +13,10 @@ import java.util.List;
 public interface OrderService {
 
     /** 创建订单：获取购物车 → 扣库存 → 查地址 → 创建订单明细 → 清空购物车 → Kafka 通知支付 */
-    R<Order> createOrder(Long userId, Long addressId, String remark);
+    R<Order> createOrder(Long userId, Long addressId, String remark, String orderToken);
+
+    /** 生成下单幂等 Token */
+    R<String> generateOrderToken(Long userId);
 
     /** 查询订单详情 */
     R<Order> getOrderDetail(Long userId, Long orderId);
@@ -23,6 +26,9 @@ public interface OrderService {
 
     /** 取消订单（仅待支付状态可取消） */
     R<String> cancelOrder(Long userId, Long orderId);
+
+    /** 按 orderNo 取消订单（供超时调度器调用） */
+    void cancelOrderByNo(String orderNo);
 
     /** 卖家查看包含自己商品的订单 */
     R<List<Order>> getSellerOrders(Long sellerId, Integer page, Integer size);

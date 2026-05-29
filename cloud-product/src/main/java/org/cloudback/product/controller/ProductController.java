@@ -1,11 +1,9 @@
 package org.cloudback.product.controller;
 
-import io.minio.MinioClient;
-import io.minio.PutObjectArgs;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.cloudback.common.result.R;
-import org.cloudback.product.model.entity.Category;
+import org.cloudback.common.service.FileService;
 import org.cloudback.product.model.entity.Product;
 import org.cloudback.product.service.ProductService;
 import org.springframework.beans.factory.annotation.Value;
@@ -13,7 +11,6 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
-import java.util.UUID;
 
 /**
  * 商品服务控制器，提供分类管理和商品 CRUD 接口。
@@ -29,13 +26,7 @@ import java.util.UUID;
 public class ProductController {
 
     private final ProductService productService;
-    private final MinioClient minioClient;
-
-    @Value("${minio.bucket}")
-    private String bucket;
-
-    @Value("${minio.endpoint}")
-    private String endpoint;
+    private final FileService fileService;
 
     // ===== 公共查询 =====
 
@@ -64,14 +55,14 @@ public class ProductController {
     // ===== feign服务 =====
 
     /** 扣减库存（供订单服务 Feign 内部调用） */
-    @PutMapping("/stock/deduct/{id}")
+    @PostMapping("/{id}/stock/deduct")
     public R<String> deductStock(@PathVariable Long id,
                                  @RequestParam Integer quantity) {
         return productService.deductStock(id, quantity);
     }
 
     /** 回滚库存（供订单服务取消订单/支付超时 Feign 内部调用） */
-    @PutMapping("/stock/restore/{id}")
+    @PostMapping("/{id}/stock/restore")
     public R<String> restoreStock(@PathVariable Long id,
                                   @RequestParam Integer quantity) {
         return productService.restoreStock(id, quantity);
@@ -82,26 +73,11 @@ public class ProductController {
     /** 上传图片到 MinIO，返回可访问的 URL */
     @PostMapping("/upload")
     public R<String> uploadImage(@RequestParam("file") MultipartFile file) {
-        if (file.isEmpty()) {
-            return R.fail("请选择文件");
-        }
-        String originalName = file.getOriginalFilename();
-        String ext = "";
-        if (originalName != null && originalName.contains(".")) {
-            ext = originalName.substring(originalName.lastIndexOf("."));
-        }
-        String objectName = "product/" + UUID.randomUUID() + ext;
         try {
-            minioClient.putObject(PutObjectArgs.builder()
-                    .bucket(bucket)
-                    .object(objectName)
-                    .stream(file.getInputStream(), file.getSize(), -1)
-                    .contentType(file.getContentType())
-                    .build());
-            String url = "http://" + endpoint + "/" + bucket + "/" + objectName;
+            String url = fileService.upload(file, "product");
             return R.ok(url);
         } catch (Exception e) {
-            log.error("上传文件到 MinIO 失败", e);
+            log.error("上传文件失败", e);
             return R.fail("上传失败，请重试");
         }
     }

@@ -26,7 +26,7 @@ public class OrderController {
     @PostMapping
     public R<Order> createOrder(@RequestHeader("X-User-Id") Long userId,
                                 @RequestBody CreateOrderRequest request) {
-        return orderService.createOrder(userId, request.addressId(), request.remark());
+        return orderService.createOrder(userId, request.addressId(), request.remark(), request.orderToken());
     }
 
     /** 订单详情 */
@@ -45,16 +45,22 @@ public class OrderController {
     }
 
     /** 取消订单 */
-    @PostMapping("/{id}/cancel")
+    @PatchMapping("/{id}/cancel")
     public R<String> cancelOrder(@RequestHeader("X-User-Id") Long userId,
                                  @PathVariable Long id) {
         return orderService.cancelOrder(userId, id);
     }
 
     /** 确认收货 */
-    @PostMapping("/{id}/receive")
+    @PatchMapping("/{id}/receive")
     public R<String> receiveOrder(@RequestHeader("X-User-Id") Long userId,
                                   @PathVariable Long id) {
         return orderService.receiveOrder(userId, id);
+    }
+
+    /** 获取下单幂等 Token */
+    @GetMapping("/token")
+    public R<String> getOrderToken(@RequestHeader("X-User-Id") Long userId) {
+        return orderService.generateOrderToken(userId);
     }
 }

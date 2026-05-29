@@ -1,6 +1,7 @@
 package org.cloudback.product.service;
 
 import org.cloudback.common.result.R;
+import org.cloudback.product.dto.ProductRequest;
 import org.cloudback.product.model.entity.Category;
 import org.cloudback.product.model.entity.Product;
 import java.util.List;
@@ -17,13 +18,13 @@ public interface ProductService {
     R<List<Category>> getCategoryTree();
 
     /** 添加分类 */
-    R<String> addCategory(Long userId, String role, Category category);
+    R<String> addCategory(String role, Category category);
 
     /** 修改分类 */
-    R<String> updateCategory(Long userId, String role, Category category);
+    R<String> updateCategory(String role, Category category);
 
     /** 删除分类（有子分类时不允许删除） */
-    R<String> deleteCategory(Long userId, String role, Long id);
+    R<String> deleteCategory(String role, Long id);
 
     /** 获取商品详情 */
     R<Product> getProductDetail(Long productId);
@@ -35,10 +36,10 @@ public interface ProductService {
     R<List<Product>> getMyProducts(Long userId, Integer page, Integer size);
 
     /** 添加商品 */
-    R<String> addProduct(Long userId, String role, Product product);
+    R<String> addProduct(Long userId, String role, ProductRequest request);
 
     /** 修改商品 */
-    R<String> updateProduct(Long userId, String role, Product product);
+    R<String> updateProduct(Long userId, String role, Long id, ProductRequest request);
 
     /** 删除商品（逻辑删除） */
     R<String> deleteProduct(Long userId, String role, Long id);

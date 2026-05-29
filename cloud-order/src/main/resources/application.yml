@@ -35,6 +35,11 @@ spring:
       value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
       properties:
         spring.json.trusted.packages: "*"
+  data:
+    redis:
+      host: ${REDIS_ADDR:${VM_HOST:localhost}}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:redis123}
 
 mybatis-plus:
   global-config:

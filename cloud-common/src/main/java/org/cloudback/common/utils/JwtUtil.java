@@ -19,10 +19,16 @@ import java.util.Map;
 @Slf4j
 public class JwtUtil {
 
-    /** HMAC-SHA256 密钥，生产环境应从配置中心读取 */
-    private static final String SECRET = "CloudBack2026SecretKeyForJwtTokenGenerationMustBeLongEnough";
+    /** HMAC-SHA256 密钥，通过 JwtSecretConfig 从环境变量注入 */
+    private static String SECRET;
+
     /** Token 有效期: 2 小时 */
     private static final long EXPIRE_SECONDS = 7200L;
+
+    /** 由 Spring 配置类调用，注入 JWT 密钥 */
+    public static void setSecret(String secret) {
+        SECRET = secret;
+    }
 
     private static SecretKey getSecretKey() {
         return Keys.hmacShaKeyFor(SECRET.getBytes(StandardCharsets.UTF_8));
