@@ -415,4 +415,13 @@ public class ProductServiceImpl implements ProductService {
         }
         log.info("已加载 {} 条商品 ID 到布隆过滤器", allProducts.size());
     }
+
+    @Override
+    public R<List<Product>> getProductsBySellerId(Long sellerId) {
+        LambdaQueryWrapper<Product> wrapper = new LambdaQueryWrapper<Product>()
+                .eq(Product::getSellerId, sellerId)
+                .select(Product::getId);
+        List<Product> products = productMapper.selectList(wrapper);
+        return R.ok(products);
+    }
 }

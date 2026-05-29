@@ -105,4 +105,12 @@ public class ProductController {
             return R.fail("上传失败，请重试");
         }
     }
+
+    // ===== feign服务 =====
+
+    /** 按卖家 ID 获取商品列表（供订单服务 Feign 调用） */
+    @GetMapping("/seller/{sellerId}")
+    public R<List<Product>> getProductsBySellerId(@PathVariable Long sellerId) {
+        return productService.getProductsBySellerId(sellerId);
+    }
 }

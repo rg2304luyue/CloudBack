@@ -5,6 +5,8 @@ import org.cloudback.common.result.R;
 import org.cloudback.common.result.ResultCode;
 import org.springframework.cloud.openfeign.FallbackFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.web.bind.annotation.PathVariable;
+import java.util.List;
 
 @Slf4j
 @Component
@@ -27,6 +29,9 @@ public class ProductFeignFallbackFactory implements FallbackFactory<ProductFeign
             public R<String> restoreStock(Long id, Integer quantity) {
                 return R.fail(ResultCode.SERVICE_UNAVAILABLE);
             }
+
+            @Override
+            public R<List<ProductDTO>> getProductsBySellerId(@PathVariable Long sellerId) {return R.fail(ResultCode.SERVICE_UNAVAILABLE);}
         };
     }
 }

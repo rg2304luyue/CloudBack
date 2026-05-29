@@ -57,4 +57,7 @@ public interface ProductService {
 
     /** 获取热门商品 Top8，按 Redis ZSET 浏览量排序，降级按销量 */
     R<List<Product>> getHotProducts();
+
+    /** 按卖家 ID 获取商品列表 */
+    R<List<Product>> getProductsBySellerId(Long sellerId);
 }

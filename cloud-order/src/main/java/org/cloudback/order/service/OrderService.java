@@ -23,4 +23,13 @@ public interface OrderService {
 
     /** 取消订单（仅待支付状态可取消） */
     R<String> cancelOrder(Long userId, Long orderId);
+
+    /** 卖家查看包含自己商品的订单 */
+    R<List<Order>> getSellerOrders(Long sellerId, Integer page, Integer size);
+
+    /** 卖家发货（已支付 → 已发货） */
+    R<String> shipOrder(Long sellerId, Long orderId);
+
+    /** 确认收货（已发货 → 已完成） */
+    R<String> receiveOrder(Long userId, Long orderId);
 }

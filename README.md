@@ -58,11 +58,14 @@ CloudBack/
 │       ├── controller/AuthController.java
 │       └── service/impl/AuthServiceImpl.java
 │
-├── cloud-user/     :8083       # 用户服务
+├── cloud-user/     :8083       # 用户服务（@EnableFeignClients 聚合看板数据）
 │   └── src/main/java/org/cloudback/user/
 │       ├── UserApplication.java
-│       ├── controller/UserController.java
+│       ├── controller/
+│       │   ├── UserController.java
+│       │   └── AdminUserController.java      # 管理员：用户管理 + 看板统计
 │       ├── service/impl/UserServiceImpl.java
+│       ├── feign/              # OrderFeignClient、ProductFeignClient（聚合看板数据）
 │       ├── model/entity/       # Address、SellerApplication
 │       └── mapper/             # AddressMapper、SellerApplicationMapper
 │
@@ -82,11 +85,14 @@ CloudBack/
 │       ├── feign/ProductFeignClient.java   # 查商品信息
 │       └── dto/CartItem.java
 │
-├── cloud-order/    :8085       # 订单服务
+├── cloud-order/    :8085       # 订单服务（@EnableScheduling 订单超时自动取消）
 │   └── src/main/java/org/cloudback/order/
 │       ├── OrderApplication.java
-│       ├── controller/OrderController.java
+│       ├── controller/
+│       │   ├── OrderController.java              # 买家订单：创建/查询/取消/确认收货
+│       │   └── SellerOrderController.java        # 卖家订单：查询/发货
 │       ├── service/impl/OrderServiceImpl.java    # 核心下单编排
+│       ├── scheduler/OrderTimeoutScheduler.java  # 定时扫描超时订单自动取消
 │       ├── mq/PaymentResultConsumer.java         # Kafka 支付结果消费者
 │       ├── feign/              # CartFeignClient、ProductFeignClient、UserFeignClient
 │       │                       # CartItemDTO、ProductDTO
@@ -230,12 +236,18 @@ Gateway 白名单外的所有请求强制携带有效 JWT，解析失败返回 4
 
 ```yaml
 spring.cloud.gateway.routes:
-  - /api/auth/**     → lb://cloud-auth      (StripPrefix=1)
-  - /api/user/**     → lb://cloud-user
-  - /api/product/**  → lb://cloud-product
-  - /api/cart/**     → lb://cloud-cart
-  - /api/order/**    → lb://cloud-order
-  - /api/payment/**  → lb://cloud-payment
+  - /api/auth/**             → lb://cloud-auth      (StripPrefix=1)
+  - /api/users/**            → lb://cloud-user
+  - /api/admin/users/**      → lb://cloud-user
+  - /api/admin/applications/** → lb://cloud-user
+  - /api/categories/**       → lb://cloud-product
+  - /api/seller/products/**  → lb://cloud-product
+  - /api/admin/products/**   → lb://cloud-product
+  - /api/products/**         → lb://cloud-product
+  - /api/cart/**             → lb://cloud-cart
+  - /api/orders/**           → lb://cloud-order
+  - /api/seller/orders/**    → lb://cloud-order
+  - /api/payment/**          → lb://cloud-payment
 ```
 
 CORS 通过 `CorsConfig`（WebFlux `CorsWebFilter`）全局允许所有来源。
@@ -246,8 +258,10 @@ CORS 通过 `CorsConfig`（WebFlux `CorsWebFilter`）全局允许所有来源。
 |---|---|---|---|
 | cloud-cart | `ProductFeignClient` | cloud-product | `GET /product/detail/{id}` |
 | cloud-order | `CartFeignClient` | cloud-cart | `GET /cart/checked`、`DELETE /cart/clear` |
-| cloud-order | `ProductFeignClient` | cloud-product | `PUT /product/stock/deduct/{id}`、`PUT /product/stock/restore/{id}`、`GET /product/detail/{id}` |
-| cloud-order | `UserFeignClient` | cloud-user | `GET /user/address/{id}` |
+| cloud-order | `ProductFeignClient` | cloud-product | `PUT /products/stock/deduct/{id}`、`PUT /products/stock/restore/{id}`、`GET /products/{id}`、`GET /products/seller/{sellerId}` |
+| cloud-order | `UserFeignClient` | cloud-user | `GET /users/me/addresses/{id}` |
+| cloud-user | `OrderFeignClient` | cloud-order | `GET /orders/stats` |
+| cloud-user | `ProductFeignClient` | cloud-product | `GET /products/stats` |
 
 **Feign 用户上下文透传**：`cloud-order` 中的 `FeignRequestInterceptor` 实现了 `feign.RequestInterceptor`，从当前 HTTP 请求（`RequestContextHolder`）提取 `X-User-Id`、`X-Username`、`X-User-Role`，自动注入到每个 Feign 请求头，确保下游服务能识别调用方身份。
 
@@ -516,7 +530,55 @@ PUT /api/user/admin/reset-password?targetUserId=&newPassword=
   → BCrypt 加密新密码 → 更新指定用户密码
 ```
 
-### 11. 图片上传（MinIO 对象存储）
+### 11. 卖家订单管理与发货
+
+```text
+卖家查看订单 GET /api/seller/orders?page=&size=
+  1. Feign → ProductFeignClient.getProductsBySellerId(sellerId) 获取卖家商品 ID 列表
+  2. SELECT DISTINCT order_id FROM order_item WHERE product_id IN (...)
+  3. SELECT * FROM order_info WHERE id IN (...) 分页查询
+  4. 为每个订单填充 orderItems 明细
+  → 返回包含卖家商品的订单列表（按创建时间降序）
+
+卖家发货 PUT /api/seller/orders/{id}/ship
+  1. 查订单，校验 status == PAID（只能对已支付订单发货）
+  2. Feign 校验该订单包含此卖家的商品
+  3. UPDATE order_info SET status = 2 (SHIPPED)
+```
+
+### 12. 确认收货
+
+```text
+买家确认收货 POST /api/orders/{id}/receive
+  1. 查订单，校验 userId 归属（防越权）
+  2. 检查 status == SHIPPED（只能确认已发货订单）
+  3. UPDATE order_info SET status = 3 (COMPLETED)
+```
+
+### 13. 订单超时自动取消
+
+```text
+OrderTimeoutScheduler (@Scheduled fixedRate=60000ms)
+  1. SELECT * FROM order_info WHERE status = 0 AND create_time <= now() - 30min
+  2. 对每个超时订单独立事务处理：
+     a. UPDATE order_info SET status = 4 (CANCELLED)
+     b. 查询 order_item 明细
+     c. 逐项调用 ProductFeignClient.restoreStock() 回滚库存
+     - 若 Feign 失败：事务回滚 → 下次定时任务重试该订单
+     - 每个订单独立 @Transactional，互不影响
+```
+
+### 14. 管理员看板
+
+```text
+GET /api/admin/stats（仅 ADMIN）
+  1. cloud-user 直接查询：userCount（用户总数）、sellerCount（卖家数）
+  2. Feign → ProductFeignClient.getProductStats() → productCount（上架商品数）
+  3. Feign → OrderFeignClient.getOrderStats() → orderCount、totalAmount、pendingOrderCount
+  4. 聚合返回统计卡片数据
+```
+
+### 15. 图片上传（MinIO 对象存储）
 
 ```text
 前端选择文件
@@ -568,7 +630,9 @@ PUT /api/user/admin/reset-password?targetUserId=&newPassword=
 | DELETE | `/api/categories/{id}` | product | 是 | 删除分类 |
 | GET | `/api/products/hot` | product | 否 | 热门商品 Top8 |
 | GET | `/api/products` | product | 否 | 商品列表(分页/搜索/分类) |
-| GET | `/api/products/{id}` | product | 否 | 商品详情 |
+| GET | `/api/products/{id}` | product | 否 | 商品详情（可选传 X-User-Id 记录浏览历史） |
+| GET | `/api/products/suggest` | product | 否 | 搜索建议（query: keyword，返回商品名列表） |
+| GET | `/api/products/history` | product | 是 | 浏览历史（最近 20 条，从 Redis List 读取） |
 | GET | `/api/seller/products/mine` | product | 是 | 卖家自己的商品 |
 | POST | `/api/seller/products` | product | 是 | 添加商品（JSON body，SELLER/ADMIN） |
 | PUT | `/api/seller/products/{id}` | product | 是 | 修改商品（JSON body，id 在 URL） |
@@ -589,6 +653,13 @@ PUT /api/user/admin/reset-password?targetUserId=&newPassword=
 | GET | `/api/orders` | order | 是 | 订单列表（query: page, size） |
 | GET | `/api/orders/{id}` | order | 是 | 订单详情（含订单明细 orderItems） |
 | POST | `/api/orders/{id}/cancel` | order | 是 | 取消订单（同时回滚库存） |
+| POST | `/api/orders/{id}/receive` | order | 是 | 确认收货（已发货 → 已完成） |
+| GET | `/api/orders/stats` | order | 内部 | Feign 获取订单统计（总数/总金额/待支付数） |
+| GET | `/api/seller/orders` | order | 是 | 卖家查看包含自己商品的订单 |
+| PUT | `/api/seller/orders/{id}/ship` | order | 是 | 卖家发货（已支付 → 已发货） |
+| GET | `/api/products/seller/{sellerId}` | product | 内部 | Feign 按卖家 ID 获取商品列表 |
+| GET | `/api/products/stats` | product | 内部 | Feign 获取商品统计（上架数） |
+| GET | `/api/admin/stats` | user | 是 | 管理员看板数据（聚合用户/商品/订单统计） |
 | POST | `/api/payment/pay` | payment | 是 | 发起支付（JSON body: orderNo, method） |
 | POST | `/api/payment/notify/alipay` | payment | 否 | 支付宝异步通知回调 |
 | GET | `/api/payment/return/alipay` | payment | 否 | 支付宝同步回跳（查支付→跳前端） |
@@ -630,9 +701,17 @@ order_info ──< payment
 
 ```
 0-待支付 → 1-已支付 → 2-已发货 → 3-已完成
-   │                                    ↑
-   └────────── 4-已取消 ────────────────┘（不可逆）
+   │              │         │         ↑
+   │              │         └──── 买家确认收货
+   │              │
+   │              └── 卖家发货 (SellerOrderController)
+   │
+   └────────── 4-已取消（手动取消 / 定时任务超时自动取消）
 ```
+
+- **卖家发货**：`PUT /seller/orders/{id}/ship`，仅已支付(1)可操作
+- **买家确认收货**：`POST /orders/{id}/receive`，仅已发货(2)可操作
+- **超时自动取消**：`OrderTimeoutScheduler` 每 60s 扫描超过 30 分钟未支付的订单，改为已取消并回滚库存
 
 ---
 
@@ -647,6 +726,7 @@ order_info ──< payment
 | `cloud:product:ids:{categoryId}:{keyword}` | String | 商品列表 ID 映射 L2 缓存，TTL 2 分钟（写操作不主动淘汰，短 TTL 兜底） |
 | `cloud:cart:cache:{userId}` | String | 购物车 L2 缓存，TTL 5 分钟 |
 | `cloud:cart:cache:checked:{userId}` | String | 已勾选商品 L2 缓存，TTL 5 分钟 |
+| `cloud:browse:history:{userId}` | List | 用户浏览历史，productId 字符串，最多 50 条，最新在左 |
 | `cloud:token:blacklist:{tokenId}` | String | Token 黑名单（预留，当前未使用） |
 
 ---

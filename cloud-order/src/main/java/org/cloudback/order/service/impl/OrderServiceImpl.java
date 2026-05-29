@@ -31,6 +31,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * 订单服务实现，处理下单全流程。
@@ -202,5 +203,120 @@ public class OrderServiceImpl implements OrderService {
         }
 
         return R.ok("订单已取消");
+    }
+
+    // ==================== 卖家订单 ====================
+
+    /** 查询包含某卖家商品的订单（通过 order_item 表关联） */
+    @Override
+    public R<List<Order>> getSellerOrders(Long sellerId, Integer page, Integer size) {
+        // 1. 查出包含该卖家商品的 order_id 列表（去重）
+        LambdaQueryWrapper<OrderItem> itemWrapper = new LambdaQueryWrapper<OrderItem>()
+                .eq(OrderItem::getProductId, sellerId) // 注意：这里需要用子查询或自定义SQL
+                .select(OrderItem::getOrderId);
+        // 上面的写法不对，order_item 没有 sellerId 字段
+        // 正确做法：先查该卖家的所有商品 ID，再查包含这些商品的订单
+
+        // 使用自定义查询：先从 product 服务获取卖家商品 ID 列表
+        // 简化方案：直接在 order_item 上按 productId IN (...) 查询
+        // 需要先通过 Feign 获取卖家的商品 ID 列表
+        List<Long> sellerProductIds;
+        try {
+            R<List<ProductDTO>> productResult = productFeignClient.getProductsBySellerId(sellerId);
+            if (productResult.getCode() != 200 || productResult.getData() == null
+                    || productResult.getData().isEmpty()) {
+                return R.ok(new ArrayList<>(), 0);
+            }
+            sellerProductIds = productResult.getData().stream()
+                    .map(ProductDTO::getId).collect(Collectors.toList());
+        } catch (Exception e) {
+            log.warn("获取卖家商品列表失败, sellerId={}", sellerId, e);
+            return R.ok(new ArrayList<>(), 0);
+        }
+
+        // 2. 查出包含这些商品的 order_id（去重）
+        LambdaQueryWrapper<OrderItem> wrapper = new LambdaQueryWrapper<OrderItem>()
+                .in(OrderItem::getProductId, sellerProductIds)
+                .select(OrderItem::getOrderId)
+                .groupBy(OrderItem::getOrderId)
+                .orderByDesc(OrderItem::getOrderId);
+        List<OrderItem> items = orderItemMapper.selectList(wrapper);
+        List<Long> orderIds = items.stream().map(OrderItem::getOrderId)
+                .distinct().collect(Collectors.toList());
+
+        if (orderIds.isEmpty()) {
+            return R.ok(new ArrayList<>(), 0);
+        }
+
+        // 3. 按 orderIds 查订单并分页
+        LambdaQueryWrapper<Order> orderWrapper = new LambdaQueryWrapper<Order>()
+                .in(Order::getId, orderIds)
+                .orderByDesc(Order::getCreateTime);
+        Page<Order> orderPage = new Page<>(page, size);
+        orderMapper.selectPage(orderPage, orderWrapper);
+
+        // 填充订单明细
+        List<Order> orders = orderPage.getRecords();
+        for (Order order : orders) {
+            List<OrderItem> orderItems = orderItemMapper.selectList(
+                    new LambdaQueryWrapper<OrderItem>().eq(OrderItem::getOrderId, order.getId()));
+            order.setOrderItems(orderItems);
+        }
+
+        return R.ok(orders, (int) orderPage.getTotal());
+    }
+
+    /** 卖家发货：已支付(1) → 已发货(2) */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public R<String> shipOrder(Long sellerId, Long orderId) {
+        Order order = orderMapper.selectById(orderId);
+        if (order == null) {
+            throw new BusinessException(ResultCode.ORDER_NOT_EXIST);
+        }
+        if (!order.getStatus().equals(SystemConstants.ORDER_STATUS_PAID)) {
+            throw new BusinessException(ResultCode.ORDER_STATUS_ERROR.getCode(), "只能对已支付的订单发货");
+        }
+        // 校验该订单包含此卖家的商品
+        List<OrderItem> items = orderItemMapper.selectList(
+                new LambdaQueryWrapper<OrderItem>().eq(OrderItem::getOrderId, orderId));
+        List<Long> sellerProductIds;
+        try {
+            R<List<ProductDTO>> result = productFeignClient.getProductsBySellerId(sellerId);
+            if (result.getCode() != 200 || result.getData() == null) {
+                throw new BusinessException("无法验证卖家商品");
+            }
+            sellerProductIds = result.getData().stream()
+                    .map(ProductDTO::getId).collect(Collectors.toList());
+        } catch (BusinessException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new BusinessException("验证卖家商品失败");
+        }
+        boolean hasSellerProduct = items.stream()
+                .anyMatch(item -> sellerProductIds.contains(item.getProductId()));
+        if (!hasSellerProduct) {
+            throw new BusinessException("该订单不包含您的商品");
+        }
+
+        order.setStatus(SystemConstants.ORDER_STATUS_SHIPPED);
+        orderMapper.updateById(order);
+        return R.ok("发货成功");
+    }
+
+    /** 确认收货，仅已发货状态可操作 */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public R<String> receiveOrder(Long userId, Long orderId) {
+        Order order = orderMapper.selectById(orderId);
+        if (order == null || !order.getUserId().equals(userId)) {
+            throw new BusinessException(ResultCode.ORDER_NOT_EXIST);
+        }
+        if (!order.getStatus().equals(SystemConstants.ORDER_STATUS_SHIPPED)) {
+            throw new BusinessException(ResultCode.ORDER_STATUS_ERROR.getCode(), "只能确认已发货的订单");
+        }
+        order.setStatus(SystemConstants.ORDER_STATUS_COMPLETED);
+        orderMapper.updateById(order);
+        return R.ok("已确认收货");
     }
 }

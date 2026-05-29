@@ -7,6 +7,8 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 
+import java.util.List;
+
 /**
  * 商品服务 Feign 客户端，用于下单时扣减库存。
  *
@@ -25,6 +27,10 @@ public interface ProductFeignClient {
     R<String> restoreStock(@PathVariable Long id, @RequestParam Integer quantity);
 
     /** 获取商品基本信息（名称和图片） */
-    @GetMapping("/product/{id}")
+    @GetMapping("/products/{id}")
     R<ProductDTO> getProductDetail(@PathVariable Long id);
+
+    /** 获取卖家的所有商品（用于卖家订单查询） */
+    @GetMapping("/products/seller/{sellerId}")
+    R<List<ProductDTO>> getProductsBySellerId(@PathVariable Long sellerId);
 }

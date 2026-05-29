@@ -50,4 +50,11 @@ public class OrderController {
                                  @PathVariable Long id) {
         return orderService.cancelOrder(userId, id);
     }
+
+    /** 确认收货 */
+    @PostMapping("/{id}/receive")
+    public R<String> receiveOrder(@RequestHeader("X-User-Id") Long userId,
+                                  @PathVariable Long id) {
+        return orderService.receiveOrder(userId, id);
+    }
 }

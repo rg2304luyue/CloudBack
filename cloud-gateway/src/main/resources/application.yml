@@ -75,6 +75,12 @@ spring:
             - Path=/api/cart/**
           filters:
             - StripPrefix=1
+        - id: cloud-seller-orders
+          uri: lb://cloud-order
+          predicates:
+            - Path=/api/seller/orders/**
+          filters:
+            - StripPrefix=1
         - id: cloud-orders
           uri: lb://cloud-order
           predicates:
