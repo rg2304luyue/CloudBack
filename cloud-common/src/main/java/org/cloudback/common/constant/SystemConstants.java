@@ -57,4 +57,7 @@ public interface SystemConstants {
     String KAFKA_TOPIC_PAYMENT_RESULT = "payment-result";
     /** Kafka Topic: 库存扣减 */
     String KAFKA_TOPIC_INVENTORY_DEDUCT = "inventory-deduct";
+
+    /** Meilisearch 商品索引名 */
+    public static final String MEILI_INDEX_PRODUCTS = "products";
 }

@@ -46,3 +46,8 @@ minio:
   access-key: ${MINIO_ACCESS_KEY:admin}
   secret-key: ${MINIO_SECRET_KEY:admin123456}
   bucket: ${MINIO_BUCKET:cloudmall-products}
+
+meili:
+  host: ${MEILI_HOST:${VM_HOST:localhost}}
+  port: ${MEILI_PORT:7700}
+  master-key: ${MEILI_MASTER_KEY:meili-master-key-change-me}

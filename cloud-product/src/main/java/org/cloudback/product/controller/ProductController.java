@@ -52,6 +52,21 @@ public class ProductController {
         return productService.getProductList(categoryId, page, size, keyword, sortBy);
     }
 
+    /** Meilisearch 全文搜索，支持中文分词和拼写纠错 */
+    @GetMapping("/search")
+    public R<List<Product>> search(@RequestParam String keyword,
+                                   @RequestParam(required = false) Long categoryId,
+                                   @RequestParam(defaultValue = "1") Integer page,
+                                   @RequestParam(defaultValue = "10") Integer size) {
+        return productService.search(keyword, categoryId, page, size);
+    }
+
+    /** 搜索建议（自动补全） */
+    @GetMapping("/suggest")
+    public R<List<String>> suggest(@RequestParam String keyword,
+                                   @RequestParam(defaultValue = "10") int limit) {
+        return productService.suggest(keyword, limit);
+    }
     // ===== feign服务 =====
 
     /** 扣减库存（供订单服务 Feign 内部调用） */

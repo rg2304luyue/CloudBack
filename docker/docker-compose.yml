@@ -94,10 +94,25 @@ services:
     networks:
       - cloud-net
 
+  meilisearch:
+    image: getmeili/meilisearch:v1.10
+    container_name: cloud-meilisearch
+    restart: always
+    ports:
+      - "7700:7700"
+    environment:
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-meili-master-key-change-me}
+      MEILI_ENV: development
+    volumes:
+      - meili-data:/meili_data
+    networks:
+      - cloud-net
+
 volumes:
   nacos-data:
   kafka-data:
   minio-data:
+  meili-data:
 
 networks:
   cloud-net:

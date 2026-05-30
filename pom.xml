@@ -49,6 +49,7 @@
         <lombok.version>1.18.46</lombok.version>
         <dotenv.version>3.2.0</dotenv.version>
         <redisson.version>3.34.0</redisson.version>
+        <meilisearch.version>0.14.4</meilisearch.version>
     </properties>
 
     <dependencyManagement>
@@ -161,6 +162,13 @@
                 <groupId>org.redisson</groupId>
                 <artifactId>redisson-spring-boot-starter</artifactId>
                 <version>${redisson.version}</version>
+            </dependency>
+
+            <!-- Meilisearch 搜索引擎 -->
+            <dependency>
+                <groupId>com.meilisearch.sdk</groupId>
+                <artifactId>meilisearch-java</artifactId>
+                <version>${meilisearch.version}</version>
             </dependency>
 
             <!-- 内部模块 -->

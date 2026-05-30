@@ -119,5 +119,12 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- Meilisearch 搜索引擎（条件化配置，仅在配置了 meili.host 的模块加载） -->
+        <dependency>
+            <groupId>com.meilisearch.sdk</groupId>
+            <artifactId>meilisearch-java</artifactId>
+            <version>${meilisearch.version}</version>
+            <optional>true</optional>
+        </dependency>
     </dependencies>
 </project>

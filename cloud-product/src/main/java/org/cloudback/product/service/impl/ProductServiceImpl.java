@@ -18,6 +18,7 @@ import org.cloudback.product.model.entity.Category;
 import org.cloudback.product.model.entity.Product;
 import org.cloudback.product.dto.ProductRequest;
 import org.cloudback.product.service.ProductService;
+import org.cloudback.product.service.SearchService;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -45,6 +46,7 @@ public class ProductServiceImpl implements ProductService {
     private final TwoLevelCacheService hotProductsTwoLevel;
     private final TwoLevelCacheService productIdListTwoLevel;
     private final BloomFilterService bloomFilter;
+    private final SearchService searchService;
 
 
     // ==================== 分类 ====================
@@ -136,6 +138,22 @@ public class ProductServiceImpl implements ProductService {
 
     @Override
     public R<List<Product>> getProductList(Long categoryId, Integer page, Integer size, String keyword, String sortBy) {
+        // 有 keyword 时走 Meilisearch 全文搜索
+        if (keyword != null && !keyword.isEmpty()) {
+            List<Long> searchIds = searchService.search(keyword, categoryId, page, size);
+            if (searchIds.isEmpty()) {
+                return R.ok(Collections.emptyList(), 0);
+            }
+            List<Product> result = searchIds.stream()
+                    .map(id -> productDetailTwoLevel.get(
+                            SystemConstants.REDIS_KEY_PREFIX + "product:detail:" + id,
+                            Product.class,
+                            () -> productMapper.selectById(id),
+                            300))
+                    .collect(Collectors.toList());
+            return R.ok(result, searchIds.size());
+        }
+
         // 1. 构建缓存 key
         String cid = categoryId == null ? "all" : String.valueOf(categoryId);
         String kw = keyword == null ? "" : keyword;
@@ -224,6 +242,10 @@ public class ProductServiceImpl implements ProductService {
         productMapper.insert(product);
         bloomFilter.addProductId(product.getId());
         hotProductsTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:hot");
+
+        if (product.getStatus() == 1) {
+            searchService.indexProduct(product);
+        }
         return R.ok(SystemConstants.ROLE_ADMIN.equals(role) ? "添加商品成功" : "添加成功，等待管理员审核");
     }
 
@@ -252,6 +274,13 @@ public class ProductServiceImpl implements ProductService {
         productMapper.updateById(product);
         hotProductsTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:hot");
         productDetailTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:detail:" + id);
+
+        Product updatedProduct = productMapper.selectById(id);
+        if (updatedProduct.getStatus() == 1) {
+            searchService.indexProduct(updatedProduct);
+        } else {
+            searchService.deleteProduct(id);
+        }
         return R.ok(SystemConstants.ROLE_SELLER.equals(role) ? "已重新提交审核" : "更新商品成功");
     }
 
@@ -268,6 +297,8 @@ public class ProductServiceImpl implements ProductService {
         // 删除商品后，列表和热门缓存应失效
         hotProductsTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:hot");
         productDetailTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:detail:" + id);
+
+        searchService.deleteProduct(id);
         return R.ok("删除商品成功");
     }
 
@@ -298,6 +329,12 @@ public class ProductServiceImpl implements ProductService {
         // 审核商品后，列表和热门缓存应失效
         hotProductsTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:hot");
         productDetailTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:detail:" + id);
+
+        if (approved) {
+            searchService.indexProduct(product);
+        } else {
+            searchService.deleteProduct(id);
+        }
         return R.ok(approved ? "审核通过" : "已拒绝，商品已下架");
     }
 
@@ -429,6 +466,20 @@ public class ProductServiceImpl implements ProductService {
         log.info("已加载 {} 条商品 ID 到布隆过滤器", allProducts.size());
     }
 
+    @PostConstruct
+    public void initSearchIndex() {
+        try {
+            List<Product> publishedProducts = productMapper.selectList(
+                    new LambdaQueryWrapper<Product>().eq(Product::getStatus, 1));
+            for (Product product : publishedProducts) {
+                searchService.indexProduct(product);
+            }
+            log.info("已重建 Meilisearch 索引，共 {} 条上架商品", publishedProducts.size());
+        } catch (Exception e) {
+            log.warn("重建 Meilisearch 索引失败（Meilisearch 可能未启动）: {}", e.getMessage());
+        }
+    }
+
     @Override
     public R<List<Product>> getProductsBySellerId(Long sellerId) {
         LambdaQueryWrapper<Product> wrapper = new LambdaQueryWrapper<Product>()
@@ -436,5 +487,26 @@ public class ProductServiceImpl implements ProductService {
                 .select(Product::getId);
         List<Product> products = productMapper.selectList(wrapper);
         return R.ok(products);
+    }
+
+    @Override
+    public R<List<Product>> search(String keyword, Long categoryId, int page, int size) {
+        List<Long> searchIds = searchService.search(keyword, categoryId, page, size);
+        if (searchIds.isEmpty()) {
+            return R.ok(Collections.emptyList(), 0);
+        }
+        List<Product> result = searchIds.stream()
+                .map(id -> productDetailTwoLevel.get(
+                        SystemConstants.REDIS_KEY_PREFIX + "product:detail:" + id,
+                        Product.class,
+                        () -> productMapper.selectById(id),
+                        300))
+                .collect(Collectors.toList());
+        return R.ok(result, searchIds.size());
+    }
+
+    @Override
+    public R<List<String>> suggest(String prefix, int limit) {
+        return R.ok(searchService.suggest(prefix, limit));
     }
 }

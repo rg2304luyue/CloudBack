@@ -61,4 +61,10 @@ public interface ProductService {
 
     /** 按卖家 ID 获取商品列表 */
     R<List<Product>> getProductsBySellerId(Long sellerId);
+
+    /** Meilisearch 全文搜索，支持中文分词和拼写纠错 */
+    R<List<Product>> search(String keyword, Long categoryId, int page, int size);
+
+    /** 搜索建议（自动补全） */
+    R<List<String>> suggest(String prefix, int limit);
 }
