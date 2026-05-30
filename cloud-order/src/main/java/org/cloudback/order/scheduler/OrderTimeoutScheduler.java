@@ -22,7 +22,7 @@ public class OrderTimeoutScheduler {
     private final OrderService orderService;
     private final RedisTemplate<String, Object> redisTemplate;
 
-    /** 高频扫描：每 1 秒从 Redis ZSet 取出超时订单并取消 */
+    /** 高频扫描（每 1 秒）：从 Redis ZSet rangeByScore 取过期订单 → ZREM 移除 → 逐个取消（每次最多 20 条） */
     @Scheduled(fixedRate = 1000)
     public void cancelByRedis() {
         String key = "cloud:order:timeout";
@@ -48,7 +48,7 @@ public class OrderTimeoutScheduler {
         }
     }
 
-    /** 低频兜底：每 5 分钟扫描 DB，防止 Redis 数据丢失 */
+    /** 低频兜底（每 5 分钟）：扫描 DB 中超时未支付订单并取消，防止 Redis ZSet 数据丢失 */
     @Scheduled(fixedRate = 300000)
     public void cancelExpiredOrders() {
         // DB 兜底查询交给 OrderService 处理，此处仅触发

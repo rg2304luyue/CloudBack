@@ -14,7 +14,7 @@ public class SellerOrderController {
 
     private final OrderService orderService;
 
-    /** 卖家查看包含自己商品的订单 */
+    /** GET /seller/orders — 卖家分页查看包含自己商品的订单（通过 order_item 关联反查） */
     @GetMapping
     public R<List<Order>> getSellerOrders(@RequestHeader("X-User-Id") Long sellerId,
                                           @RequestParam(defaultValue = "1") Integer page,
@@ -22,7 +22,7 @@ public class SellerOrderController {
         return orderService.getSellerOrders(sellerId, page, size);
     }
 
-    /** 卖家发货（已支付 → 已发货） */
+    /** PATCH /seller/orders/{id}/ship — 卖家发货（已支付→已发货），校验订单包含卖家商品 */
     @PatchMapping("/{id}/ship")
     public R<String> shipOrder(@RequestHeader("X-User-Id") Long sellerId,
                                @PathVariable Long id) {

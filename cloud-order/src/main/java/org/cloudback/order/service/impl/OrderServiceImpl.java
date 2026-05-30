@@ -55,7 +55,7 @@ public class OrderServiceImpl implements OrderService {
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final RedisTemplate<String, Object> redisTemplate;
 
-    /** 创建订单：先扣库存（Feign），成功后再写订单；订单写入失败则回滚库存 */
+    /** 创建订单：幂等Token校验 → 查购物车勾选商品 → 计算金额 → 查地址 → 逐个扣库存 → 写库 → 清购物车 → Kafka通知支付 → Redis ZSet超时；任一步骤失败回滚已扣库存 */
     @Override
     public R<Order> createOrder(Long userId, Long addressId, String remark, String orderToken) {
         // 幂等性校验：利用 Redis DEL 原子操作消费 token
@@ -177,7 +177,7 @@ public class OrderServiceImpl implements OrderService {
         }
     }
 
-    /** 查询订单详情（含订单明细），校验 userId 防越权 */
+    /** 查询订单详情（含订单明细），校验 userId 归属防越权访问 */
     @Override
     public R<Order> getOrderDetail(Long userId, Long orderId) {
         Order order = orderMapper.selectById(orderId);
@@ -190,7 +190,7 @@ public class OrderServiceImpl implements OrderService {
         return R.ok(order);
     }
 
-    /** 分页查询用户订单列表，按创建时间降序 */
+    /** 分页查询用户订单列表，按创建时间降序，使用 MyBatis-Plus 分页插件 */
     @Override
     public R<List<Order>> getOrderList(Long userId, Integer page, Integer size) {
         LambdaQueryWrapper<Order> wrapper = new LambdaQueryWrapper<Order>()
@@ -201,6 +201,7 @@ public class OrderServiceImpl implements OrderService {
         return R.ok(orderPage.getRecords(), (int) orderPage.getTotal());
     }
 
+    /** 用户取消待支付订单：仅 UNPAID 状态可取消 → 改状态为 CANCELLED → 回滚库存 → 移除 Redis ZSet */
     @Override
     @Transactional(rollbackFor = Exception.class)
     public R<String> cancelOrder(Long userId, Long orderId) {
@@ -215,7 +216,7 @@ public class OrderServiceImpl implements OrderService {
         return R.ok("订单已取消");
     }
 
-    /** 按 orderNo 取消订单（供超时调度器调用） */
+    /** 按 orderNo 取消超时订单（供 OrderTimeoutScheduler 调度器调用），仅 UNPAID 状态生效 */
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void cancelOrderByNo(String orderNo) {
@@ -228,7 +229,7 @@ public class OrderServiceImpl implements OrderService {
         doCancelOrder(order);
     }
 
-    /** 取消订单的公共逻辑：改状态 + 回滚库存 + 移除 ZSet */
+    /** 取消订单公共逻辑：改状态为 CANCELLED → 逐个回滚库存 → 移除 Redis 超时 ZSet */
     private void doCancelOrder(Order order) {
         order.setStatus(SystemConstants.ORDER_STATUS_CANCELLED);
         orderMapper.updateById(order);
@@ -242,6 +243,7 @@ public class OrderServiceImpl implements OrderService {
         redisTemplate.opsForZSet().remove("cloud:order:timeout", order.getOrderNo());
     }
 
+    /** 事务写入订单主表 + 订单明细表（同一事务），先插入订单获取 ID 后回填到订单项 */
     @Transactional(rollbackFor = Exception.class)
     protected void saveOrderAndItems(Order order, List<OrderItem> orderItems) {
         orderMapper.insert(order);
@@ -252,7 +254,7 @@ public class OrderServiceImpl implements OrderService {
     }
     // ==================== 卖家订单 ====================
 
-    /** 查询包含某卖家商品的订单（通过 order_item 表关联） */
+    /** 卖家查看包含自己商品的订单：查卖家商品ID → 反查 order_item → 查订单并填充明细（三步关联查询） */
     @Override
     public R<List<Order>> getSellerOrders(Long sellerId, Integer page, Integer size) {
         List<Long> sellerProductIds;
@@ -301,7 +303,7 @@ public class OrderServiceImpl implements OrderService {
         return R.ok(orders, (int) orderPage.getTotal());
     }
 
-    /** 卖家发货：已支付(1) → 已发货(2) */
+    /** 卖家发货：校验订单包含该卖家商品 → 已支付(1) → 已发货(2) */
     @Override
     @Transactional(rollbackFor = Exception.class)
     public R<String> shipOrder(Long sellerId, Long orderId) {
@@ -339,7 +341,7 @@ public class OrderServiceImpl implements OrderService {
         return R.ok("发货成功");
     }
 
-    /** 确认收货，仅已发货状态可操作 */
+    /** 买家确认收货：校验归属 → 已发货(2) → 已完成(3) */
     @Override
     @Transactional(rollbackFor = Exception.class)
     public R<String> receiveOrder(Long userId, Long orderId) {
@@ -355,7 +357,7 @@ public class OrderServiceImpl implements OrderService {
         return R.ok("已确认收货");
     }
 
-    /** 生成下单幂等 Token，存入 Redis，有效期 30 分钟 */
+    /** 生成下单幂等 Token（UUID），存入 Redis 30 分钟，提交订单时消费该 Token 防止重复提交 */
     @Override
     public R<String> generateOrderToken(Long userId) {
         String token = UUID.randomUUID().toString();

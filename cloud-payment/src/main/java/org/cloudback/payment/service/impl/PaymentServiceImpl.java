@@ -37,6 +37,7 @@ public class PaymentServiceImpl implements PaymentService {
     private final AlipayProperties alipayProperties;
     private final KafkaTemplate<String, String> kafkaTemplate;
 
+    /** 根据订单号查询支付记录：本地 pending 时主动向支付宝查询真实交易状态并同步到本地 */
     @Override
     public R<Payment> getPaymentByOrderNo(String orderNo) {
         Payment payment = paymentMapper.selectOne(
@@ -68,6 +69,7 @@ public class PaymentServiceImpl implements PaymentService {
         return R.ok(payment);
     }
 
+    /** 创建待支付记录（Kafka 消费者触发）：幂等检查（orderNo 已存在则跳过）→ INSERT payment(status=0) */
     @Override
     @Transactional(rollbackFor = Exception.class)
     public R<String> processPayment(String orderNo, Long userId, BigDecimal amount) {
@@ -90,6 +92,7 @@ public class PaymentServiceImpl implements PaymentService {
         return R.ok("待支付");
     }
 
+    /** 生成支付宝电脑网站支付 HTML 表单：校验权限 → 构建 pagePay 请求 → 设置 30 分钟超时 → 返回表单 */
     @Override
     public R<String> createPayForm(String orderNo, Long userId) {
         Payment payment = paymentMapper.selectOne(
@@ -125,6 +128,7 @@ public class PaymentServiceImpl implements PaymentService {
         }
     }
 
+    /** 处理支付宝异步通知：RSA2 验签 → 校验 TRADE_SUCCESS → 调用 markPaid 更新状态并 Kafka 通知订单服务 */
     @Override
     @Transactional(rollbackFor = Exception.class)
     public String handleAlipayNotify(Map<String, String> params) {
@@ -153,7 +157,7 @@ public class PaymentServiceImpl implements PaymentService {
         return "success";
     }
 
-    /** 标记支付成功并通知订单服务 */
+    /** 标记支付成功：幂等检查 → 条件 UPDATE payment SET status=1 → Kafka 发送 payment-result 通知订单服务 */
     private void markPaid(String orderNo, String tradeNo) {
         Payment existPayment = paymentMapper.selectOne(
                 new LambdaQueryWrapper<Payment>().eq(Payment::getOrderNo, orderNo));

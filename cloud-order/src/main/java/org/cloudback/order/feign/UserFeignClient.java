@@ -13,10 +13,10 @@ import java.util.Map;
  * @author CloudBack
  * @since 2025-05-17
  */
-@FeignClient(name = "cloud-user", fallbackFactory = UserFeignFallbackFactory.class)
+@FeignClient(name = "cloud-user")
 public interface UserFeignClient {
 
-    /** 根据地址 ID 查询收货地址详情 */
+    /** GET /users/me/addresses/{addressId} — 查询收货地址详情（下单时填充收件人信息） */
     @GetMapping("/users/me/addresses/{addressId}")
     org.cloudback.common.result.R<Map<String, Object>> getAddressById(@RequestHeader("X-User-Id") Long userId,
                                                                        @PathVariable Long addressId);

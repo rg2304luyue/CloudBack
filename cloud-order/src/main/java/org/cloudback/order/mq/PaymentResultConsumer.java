@@ -27,7 +27,7 @@ public class PaymentResultConsumer {
 
     private final OrderMapper orderMapper;
 
-    /** 消费支付结果消息 → 更新订单状态为已支付 */
+    /** 消费支付结果消息：解析 orderNo + status → 仅 SUCCESS 且当前 UNPAID 时更新为 PAID（条件 UPDATE 防覆盖） */
     @KafkaListener(topics = SystemConstants.KAFKA_TOPIC_PAYMENT_RESULT, groupId = "order-consumer-group")
     @Transactional(rollbackFor = Exception.class)
     public void onPaymentResult(String message) {

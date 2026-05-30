@@ -24,6 +24,7 @@ public class OrderCreateConsumer {
 
     private final PaymentService paymentService;
 
+    /** 消费订单创建消息：解析 orderNo/userId/amount → 创建待支付记录（幂等，已存在则跳过） */
     @KafkaListener(topics = SystemConstants.KAFKA_TOPIC_ORDER_CREATE, groupId = "payment-consumer-group")
     public void onOrderCreate(String message) {
         log.info("收到订单创建消息: {}", message);

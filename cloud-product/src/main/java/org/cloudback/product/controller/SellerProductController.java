@@ -15,6 +15,7 @@ public class SellerProductController {
 
     private final ProductService productService;
 
+    /** GET /seller/products/mine — 卖家分页查看自己的商品列表 */
     @GetMapping("/mine")
     public R<List<Product>> getMyProducts(@RequestHeader("X-User-Id") Long userId,
                                           @RequestParam(defaultValue = "1") Integer page,
@@ -22,6 +23,7 @@ public class SellerProductController {
         return productService.getMyProducts(userId, page, size);
     }
 
+    /** POST /seller/products — 卖家添加商品，需等待管理员审核 */
     @PostMapping
     public R<String> addProduct(@RequestHeader("X-User-Id") Long userId,
                                 @RequestHeader("X-User-Role") String role,
@@ -29,6 +31,7 @@ public class SellerProductController {
         return productService.addProduct(userId, role, request);
     }
 
+    /** PUT /seller/products/{id} — 卖家修改商品，修改后重新进入待审核状态 */
     @PutMapping("/{id}")
     public R<String> updateProduct(@RequestHeader("X-User-Id") Long userId,
                                    @RequestHeader("X-User-Role") String role,
@@ -37,6 +40,7 @@ public class SellerProductController {
         return productService.updateProduct(userId, role, id, request);
     }
 
+    /** DELETE /seller/products/{id} — 卖家逻辑删除自己的商品 */
     @DeleteMapping("/{id}")
     public R<String> deleteProduct(@RequestHeader("X-User-Id") Long userId,
                                    @RequestHeader("X-User-Role") String role,

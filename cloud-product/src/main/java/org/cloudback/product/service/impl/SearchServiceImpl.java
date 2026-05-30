@@ -26,10 +26,12 @@ public class SearchServiceImpl implements SearchService {
 
     private final Client client;
 
+    /** 获取 Meilisearch 商品索引实例 */
     private Index getIndex() {
         return client.index(SystemConstants.MEILI_INDEX_PRODUCTS);
     }
 
+    /** 启动时初始化 Meilisearch 索引：创建索引 → 设置筛选/搜索/排序字段 */
     @PostConstruct
     public void init() {
         try {
@@ -43,6 +45,7 @@ public class SearchServiceImpl implements SearchService {
         }
     }
 
+    /** 将商品文档同步到 Meilisearch 索引（以商品 ID 为主键，覆盖更新） */
     @Override
     public void indexProduct(Product product) {
         try {
@@ -75,6 +78,7 @@ public class SearchServiceImpl implements SearchService {
         }
     }
 
+    /** Meilisearch 全文搜索：仅搜 status=1 的上架商品，支持分类过滤，返回商品 ID 列表 */
     @Override
     public List<Long> search(String keyword, Long categoryId, int page, int size) {
         try {

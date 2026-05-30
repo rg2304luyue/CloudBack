@@ -24,19 +24,20 @@ public class PaymentController {
 
     private final PaymentService paymentService;
 
+    /** GET /payment/{orderNo} — 查询支付记录，若本地为待支付则主动向支付宝同步最新状态 */
     @GetMapping("/{orderNo}")
     public R<Payment> getPaymentByOrderNo(@PathVariable String orderNo) {
         return paymentService.getPaymentByOrderNo(orderNo);
     }
 
-    /** 发起支付宝页面支付，返回支付表单 HTML */
+    /** POST /payment/alipay — 发起支付宝电脑网站支付，返回支付表单 HTML（含 30 分钟超时） */
     @PostMapping("/alipay")
     public R<String> pay(@RequestBody CreatePaymentRequest request,
                          @RequestHeader("X-User-Id") Long userId) {
         return paymentService.createPayForm(request.orderNo(), userId);
     }
 
-    /** 支付宝异步通知（服务端回调） */
+    /** POST /payment/notify/alipay — 支付宝异步通知回调（服务端对服务端），RSA2 验签后更新状态 */
     @PostMapping("/notify/alipay")
     public String notifyAlipay(HttpServletRequest request) {
         Map<String, String> params = new HashMap<>();
@@ -55,18 +56,16 @@ public class PaymentController {
         return paymentService.handleAlipayNotify(params);
     }
 
-    /** 支付宝同步回跳 —— 查询支付宝确认支付结果后跳转前端 */
+    /** GET /payment/return/alipay — 支付宝同步回跳（浏览器重定向），主动查询后重定向到前端结果页 */
     @GetMapping("/return/alipay")
     public void returnAlipay(HttpServletRequest request,
                              HttpServletResponse response) throws Exception {
-        // out_trade_no 即订单号，支付宝回跳时附带
         String orderNo = request.getParameter("out_trade_no");
         if (orderNo == null || orderNo.isEmpty()) {
             response.sendRedirect("http://localhost:4173/payment/result?error=no_order");
             return;
         }
 
-        // 主动查询支付宝，若已支付则更新本地状态
         R<Payment> paymentResult;
         try {
             paymentResult = paymentService.getPaymentByOrderNo(orderNo);

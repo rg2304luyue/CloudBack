@@ -22,21 +22,21 @@ public class OrderController {
 
     private final OrderService orderService;
 
-    /** 创建订单 */
+    /** POST /orders — 创建订单：幂等校验 → 查购物车 → 扣库存 → 写库 → 清购物车 → Kafka → Redis 超时 */
     @PostMapping
     public R<Order> createOrder(@RequestHeader("X-User-Id") Long userId,
                                 @RequestBody CreateOrderRequest request) {
         return orderService.createOrder(userId, request.addressId(), request.remark(), request.orderToken());
     }
 
-    /** 订单详情 */
+    /** GET /orders/{id} — 查询订单详情（含订单明细），校验用户归属防越权 */
     @GetMapping("/{id}")
     public R<Order> getOrderDetail(@RequestHeader("X-User-Id") Long userId,
                                    @PathVariable Long id) {
         return orderService.getOrderDetail(userId, id);
     }
 
-    /** 订单列表 */
+    /** GET /orders — 分页查询当前用户的订单列表，按创建时间降序 */
     @GetMapping
     public R<List<Order>> getOrderList(@RequestHeader("X-User-Id") Long userId,
                                        @RequestParam(defaultValue = "1") Integer page,
@@ -44,21 +44,21 @@ public class OrderController {
         return orderService.getOrderList(userId, page, size);
     }
 
-    /** 取消订单 */
+    /** PATCH /orders/{id}/cancel — 取消待支付订单，回滚库存并从 Redis 超时 ZSet 中移除 */
     @PatchMapping("/{id}/cancel")
     public R<String> cancelOrder(@RequestHeader("X-User-Id") Long userId,
                                  @PathVariable Long id) {
         return orderService.cancelOrder(userId, id);
     }
 
-    /** 确认收货 */
+    /** PATCH /orders/{id}/receive — 确认收货，仅已发货状态可操作 */
     @PatchMapping("/{id}/receive")
     public R<String> receiveOrder(@RequestHeader("X-User-Id") Long userId,
                                   @PathVariable Long id) {
         return orderService.receiveOrder(userId, id);
     }
 
-    /** 获取下单幂等 Token */
+    /** GET /orders/token — 生成下单幂等 Token（Redis 存储，30 分钟有效），防止重复提交 */
     @GetMapping("/token")
     public R<String> getOrderToken(@RequestHeader("X-User-Id") Long userId) {
         return orderService.generateOrderToken(userId);

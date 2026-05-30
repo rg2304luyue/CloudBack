@@ -12,22 +12,22 @@ import java.util.List;
  * @author CloudBack
  * @since 2025-05-17
  */
-@FeignClient(name = "cloud-product", fallbackFactory = ProductFeignFallbackFactory.class)
+@FeignClient(name = "cloud-product")
 public interface ProductFeignClient {
 
-    /** 扣减商品库存 */
+    /** POST /products/{id}/stock/deduct — 原子扣减库存（下单时调用，WHERE stock>=quantity 防超卖） */
     @PostMapping("/products/{id}/stock/deduct")
     R<String> deductStock(@PathVariable Long id, @RequestParam Integer quantity);
 
-    /** 回滚商品库存（取消订单/支付超时） */
+    /** POST /products/{id}/stock/restore — 回滚库存（取消订单/支付超时时补偿调用） */
     @PostMapping("/products/{id}/stock/restore")
     R<String> restoreStock(@PathVariable Long id, @RequestParam Integer quantity);
 
-    /** 获取商品基本信息（名称和图片） */
+    /** GET /products/{id} — 获取商品基本信息（名称和图片，下单时补全缺失的商品快照） */
     @GetMapping("/products/{id}")
     R<ProductDTO> getProductDetail(@PathVariable Long id);
 
-    /** 获取卖家的所有商品（用于卖家订单查询） */
+    /** GET /products/seller/{sellerId} — 获取卖家商品 ID 列表（卖家查订单时反查关联） */
     @GetMapping("/products/seller/{sellerId}")
     R<List<ProductDTO>> getProductsBySellerId(@PathVariable Long sellerId);
 }

@@ -12,11 +12,10 @@ import org.cloudback.common.constant.SystemConstants;
 import org.cloudback.common.exception.BusinessException;
 import org.cloudback.common.result.R;
 import org.cloudback.common.result.ResultCode;
-import org.cloudback.product.mapper.CategoryMapper;
 import org.cloudback.product.mapper.ProductMapper;
-import org.cloudback.product.model.entity.Category;
 import org.cloudback.product.model.entity.Product;
 import org.cloudback.product.dto.ProductRequest;
+import org.cloudback.product.service.CategoryService;
 import org.cloudback.product.service.ProductService;
 import org.cloudback.product.service.SearchService;
 import org.springframework.data.redis.core.RedisTemplate;
@@ -38,7 +37,6 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class ProductServiceImpl implements ProductService {
 
-    private final CategoryMapper categoryMapper;
     private final ProductMapper productMapper;
     private final RedisTemplate<String, Object> redisTemplate;
 
@@ -47,69 +45,11 @@ public class ProductServiceImpl implements ProductService {
     private final TwoLevelCacheService productIdListTwoLevel;
     private final BloomFilterService bloomFilter;
     private final SearchService searchService;
+    private final CategoryService categoryService;
 
+    // ==================== 商品查询 ====================
 
-    // ==================== 分类 ====================
-
-    /** 获取分类树：查所有分类 → 按 parentId 分组 → 递归组装 */
-    @Override
-    public R<List<Category>> getCategoryTree() {
-        List<Category> allCategories = categoryMapper.selectList(null);
-
-        Map<Long, List<Category>> parentMap = allCategories.stream()
-                .collect(Collectors.groupingBy(c -> c.getParentId() == null ? 0L : c.getParentId()));
-
-        List<Category> roots = parentMap.getOrDefault(0L, new ArrayList<>());
-
-        for (Category root : roots) {
-            fillChildren(root, parentMap);
-        }
-        return R.ok(roots);
-    }
-
-    /** 递归填充子分类 */
-    private void fillChildren(Category parent, Map<Long, List<Category>> parentMap) {
-        List<Category> children = parentMap.get(parent.getId());
-        if (children != null) {
-            parent.setChildren(children);
-            for (Category child : children) {
-                fillChildren(child, parentMap);
-            }
-        }
-    }
-
-    @Override
-    public R<String> addCategory(String role, Category category) {
-        checkProductManagePermission(role);
-        categoryMapper.insert(category);
-        return R.ok("添加分类成功");
-    }
-
-    @Override
-    public R<String> updateCategory(String role, Category category) {
-        checkProductManagePermission(role);
-        Category dbCategory = categoryMapper.selectById(category.getId());
-        if (dbCategory == null) {
-            throw new BusinessException(ResultCode.NOT_FOUND.getCode(), "分类不存在");
-        }
-        categoryMapper.updateById(category);
-        return R.ok("更新分类成功");
-    }
-
-    @Override
-    public R<String> deleteCategory(String role, Long id) {
-        checkProductManagePermission(role);
-        Long childCount = categoryMapper.selectCount(
-                new LambdaQueryWrapper<Category>().eq(Category::getParentId, id));
-        if (childCount > 0) {
-            throw new BusinessException("请先删除子分类");
-        }
-        categoryMapper.deleteById(id);
-        return R.ok("删除分类成功");
-    }
-
-    // ==================== 商品 ====================
-
+    /** 获取商品详情：布隆过滤器前置拦截 → 两级缓存(Caffeine+Redis) → DB；访问时异步递增浏览量 ZSET */
     @Override
     public R<Product> getProductDetail(Long productId) {
         // 布隆过滤器拦截不存在的 ID
@@ -136,6 +76,7 @@ public class ProductServiceImpl implements ProductService {
         return R.ok(product);
     }
 
+    /** 分页商品列表：有关键词走 Meilisearch 搜索 → 无关键词走 ID 缓存 + 二级缓存加载详情 → 内存排序 → 手动分页 */
     @Override
     public R<List<Product>> getProductList(Long categoryId, Integer page, Integer size, String keyword, String sortBy) {
         // 有 keyword 时走 Meilisearch 全文搜索
@@ -167,7 +108,7 @@ public class ProductServiceImpl implements ProductService {
             wrapper.eq(Product::getStatus, 1);
 
             if (categoryId != null && categoryId > 0) {
-                List<Long> categoryIds = collectDescendantIds(categoryId);
+                List<Long> categoryIds = categoryService.collectDescendantIds(categoryId);
                 wrapper.in(Product::getCategoryId, categoryIds);
             }
             if (keyword != null && !keyword.isEmpty()) {
@@ -214,6 +155,7 @@ public class ProductServiceImpl implements ProductService {
         return R.ok(result, total);
     }
 
+    /** 卖家分页查看自己的商品列表，按创建时间降序，使用 MyBatis-Plus 分页插件 */
     @Override
     public R<List<Product>> getMyProducts(Long userId, Integer page, Integer size) {
         LambdaQueryWrapper<Product> wrapper = new LambdaQueryWrapper<>();
@@ -224,6 +166,7 @@ public class ProductServiceImpl implements ProductService {
         return R.ok(productPage.getRecords(), (int) productPage.getTotal());
     }
 
+    /** 添加商品：管理员直接上架，卖家需审核；写入后更新布隆过滤器、驱逐热门缓存、同步 Meilisearch */
     @Override
     public R<String> addProduct(Long userId, String role, ProductRequest request) {
         checkProductManagePermission(role);
@@ -249,6 +192,7 @@ public class ProductServiceImpl implements ProductService {
         return R.ok(SystemConstants.ROLE_ADMIN.equals(role) ? "添加商品成功" : "添加成功，等待管理员审核");
     }
 
+    /** 修改商品：权限校验 → 卖家修改重新进入待审核 → 更新 DB → 驱逐缓存 → 同步索引（上架索引/下架删除） */
     @Override
     public R<String> updateProduct(Long userId, String role, Long id, ProductRequest request) {
         checkProductManagePermission(role);
@@ -284,6 +228,7 @@ public class ProductServiceImpl implements ProductService {
         return R.ok(SystemConstants.ROLE_SELLER.equals(role) ? "已重新提交审核" : "更新商品成功");
     }
 
+    /** 逻辑删除商品：权限校验 → 逻辑删除 → 驱逐热门缓存和详情缓存 → 从 Meilisearch 索引移除 */
     @Override
     public R<String> deleteProduct(Long userId, String role, Long id) {
         checkProductManagePermission(role);
@@ -304,6 +249,7 @@ public class ProductServiceImpl implements ProductService {
 
     // ==================== 审核 ====================
 
+    /** 管理员分页获取待审核商品列表，按创建时间升序（先提交的先审核） */
     @Override
     public R<List<Product>> getPendingProducts(Long page, Long size) {
         LambdaQueryWrapper<Product> wrapper = new LambdaQueryWrapper<>();
@@ -314,6 +260,7 @@ public class ProductServiceImpl implements ProductService {
         return R.ok(productPage.getRecords(), (int) productPage.getTotal());
     }
 
+    /** 审核商品：通过→上架并索引到 Meilisearch，拒绝→下架并从索引移除；驱逐相关缓存 */
     @Override
     public R<String> reviewProduct(Long id, boolean approved) {
         Product product = productMapper.selectById(id);
@@ -340,6 +287,7 @@ public class ProductServiceImpl implements ProductService {
 
     // ==================== 热门商品 ====================
 
+    /** 获取热门商品 Top8：优先从 Redis ZSET 取浏览量 Top8 → 批量查缓存加载详情；降级为数据库按销量排序 */
     @Override
     public R<List<Product>> getHotProducts() {
         List<Product> products = hotProductsTwoLevel.get(
@@ -377,45 +325,23 @@ public class ProductServiceImpl implements ProductService {
 
     // ==================== 权限校验 ====================
 
+    /** 校验是否有商品管理权限（卖家或管理员），否则抛出 SELLER_ONLY 异常 */
     private void checkProductManagePermission(String role) {
         if (!SystemConstants.ROLE_SELLER.equals(role) && !SystemConstants.ROLE_ADMIN.equals(role)) {
             throw new BusinessException(ResultCode.SELLER_ONLY);
         }
     }
 
+    /** 校验商品操作权限：管理员可操作任何商品，卖家只能操作自己的商品 */
     private void checkProductPermission(Long userId, String role, Product product) {
         if (SystemConstants.ROLE_ADMIN.equals(role)) return;
         if (product.getSellerId() != null && product.getSellerId().equals(userId)) return;
         throw new BusinessException(ResultCode.NOT_YOUR_PRODUCT);
     }
 
-    /**
-     * 收集分类及其所有后代子分类的 ID，让父分类筛选能命中叶子分类下的商品。
-     */
-    private List<Long> collectDescendantIds(Long parentId) {
-        List<Category> all = categoryMapper.selectList(null);
-        Map<Long, List<Category>> parentMap = all.stream()
-                .collect(Collectors.groupingBy(
-                        c -> c.getParentId() == null ? 0L : c.getParentId()));
-        List<Long> ids = new ArrayList<>();
-        ids.add(parentId);
-        collectChildren(parentId, parentMap, ids);
-        return ids;
-    }
+    // ==================== 库存操作（订单服务 Feign 调用） ====================
 
-    private void collectChildren(Long parentId, Map<Long, List<Category>> parentMap, List<Long> ids) {
-        List<Category> children = parentMap.get(parentId);
-        if (children != null) {
-            for (Category child : children) {
-                ids.add(child.getId());
-                collectChildren(child.getId(), parentMap, ids);
-            }
-        }
-    }
-
-    // ==================== 库存 ====================
-
-    /** 原子扣减库存，UPDATE WHERE stock >= quantity 防止超卖 */
+    /** 原子扣减库存：UPDATE stock = stock - N, sales = sales + N WHERE stock >= N；事务提交后驱逐热门/详情缓存 */
     @Override
     @Transactional(rollbackFor = Exception.class)
     public R<String> deductStock(Long productId, Integer quantity) {
@@ -439,7 +365,7 @@ public class ProductServiceImpl implements ProductService {
         return R.ok("扣减库存成功");
     }
 
-    /** 原子回滚库存（取消订单/支付超时），同时减少销量 */
+    /** 回滚库存：UPDATE stock = stock + N, sales = sales - N；事务提交后驱逐热门/详情缓存 */
     @Override
     @Transactional(rollbackFor = Exception.class)
     public R<String> restoreStock(Long productId, Integer quantity) {
@@ -455,6 +381,7 @@ public class ProductServiceImpl implements ProductService {
         return R.ok("回滚库存成功");
     }
 
+    /** 启动时加载所有商品 ID 到布隆过滤器，拦截不存在 ID 的查询请求 */
     @PostConstruct
     public void initBloomFilter() {
         List<Product> allProducts = productMapper.selectList(
@@ -466,6 +393,7 @@ public class ProductServiceImpl implements ProductService {
         log.info("已加载 {} 条商品 ID 到布隆过滤器", allProducts.size());
     }
 
+    /** 启动时将所有上架商品重建 Meilisearch 全文索引 */
     @PostConstruct
     public void initSearchIndex() {
         try {
@@ -480,6 +408,7 @@ public class ProductServiceImpl implements ProductService {
         }
     }
 
+    /** 按卖家 ID 获取商品列表（仅返回 ID，供订单服务 Feign 内部查询卖家订单时反查使用） */
     @Override
     public R<List<Product>> getProductsBySellerId(Long sellerId) {
         LambdaQueryWrapper<Product> wrapper = new LambdaQueryWrapper<Product>()
@@ -489,6 +418,7 @@ public class ProductServiceImpl implements ProductService {
         return R.ok(products);
     }
 
+    /** Meilisearch 全文搜索：搜索返回商品 ID 列表 → 从两级缓存加载商品详情 */
     @Override
     public R<List<Product>> search(String keyword, Long categoryId, int page, int size) {
         List<Long> searchIds = searchService.search(keyword, categoryId, page, size);
@@ -505,6 +435,7 @@ public class ProductServiceImpl implements ProductService {
         return R.ok(result, searchIds.size());
     }
 
+    /** 搜索建议（自动补全）：基于 Meilisearch 商品名前缀匹配 */
     @Override
     public R<List<String>> suggest(String prefix, int limit) {
         return R.ok(searchService.suggest(prefix, limit));
