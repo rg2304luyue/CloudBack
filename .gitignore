@@ -47,6 +47,8 @@ docker/volumes/
 # ======== Environment ========
 .env
 .env.local
-.env.example
 application-local.yml
 docker/.env
+
+# ======== Claude Code ========
+.claude/settings.local.json
