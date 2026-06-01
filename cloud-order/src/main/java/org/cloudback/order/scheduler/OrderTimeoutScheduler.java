@@ -51,7 +51,13 @@ public class OrderTimeoutScheduler {
     /** 低频兜底（每 5 分钟）：扫描 DB 中超时未支付订单并取消，防止 Redis ZSet 数据丢失 */
     @Scheduled(fixedRate = 300000)
     public void cancelExpiredOrders() {
-        // DB 兜底查询交给 OrderService 处理，此处仅触发
-        // 如果需要保留 DB 扫描，可在 OrderService 中新增 scanExpiredOrders 方法
+        try {
+            int count = orderService.scanExpiredOrders();
+            if (count > 0) {
+                log.info("DB 兜底扫描取消 {} 个超时订单", count);
+            }
+        } catch (Exception e) {
+            log.error("DB 兜底扫描异常", e);
+        }
     }
 }

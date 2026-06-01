@@ -78,6 +78,10 @@ public class CategoryServiceImpl implements CategoryService {
         if (!SystemConstants.ROLE_SELLER.equals(role) && !SystemConstants.ROLE_ADMIN.equals(role)) {
             throw new BusinessException(ResultCode.SELLER_ONLY);
         }
+        Category dbCategory = categoryMapper.selectById(id);
+        if (dbCategory == null) {
+            throw new BusinessException(ResultCode.NOT_FOUND.getCode(), "分类不存在");
+        }
         Long childCount = categoryMapper.selectCount(
                 new LambdaQueryWrapper<Category>().eq(Category::getParentId, id));
         if (childCount > 0) {

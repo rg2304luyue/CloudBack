@@ -3,8 +3,12 @@
     "PreToolUse": [
       {
         "matcher": "Read|Write|Edit|Glob|Grep|Bash",
-        "hook": ".claude/hooks/block-env.sh",
-        "description": "Block access to .env files (allow .env.example)"
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/block-env.sh"
+          }
+        ]
       }
     ]
   }

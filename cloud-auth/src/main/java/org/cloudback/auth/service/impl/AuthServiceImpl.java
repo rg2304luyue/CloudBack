@@ -12,7 +12,11 @@ import org.cloudback.common.mapper.UserMapper;
 import org.cloudback.common.result.R;
 import org.cloudback.common.result.ResultCode;
 import org.cloudback.common.utils.JwtUtil;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.Map;
 
 /**
  * 认证服务实现，处理注册和登录逻辑。
@@ -30,7 +34,21 @@ public class AuthServiceImpl implements AuthService {
     private final UserMapper userMapper;
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public R<String> register(String username, String password, String nickname) {
+        // 输入校验
+        if (username == null || username.isBlank()) {
+            throw new BusinessException(ResultCode.PARAM_ERROR);
+        }
+        if (password == null || password.isBlank()) {
+            throw new BusinessException(ResultCode.PARAM_ERROR);
+        }
+        if (password.length() < 6) {
+            throw new BusinessException("密码长度不能少于6位");
+        }
+
+        username = username.trim();
+
         User existUser = userMapper.selectOne(
                 new LambdaQueryWrapper<User>().eq(User::getUsername, username)
         );
@@ -41,17 +59,32 @@ public class AuthServiceImpl implements AuthService {
         User user = new User();
         user.setUsername(username);
         user.setPassword(BCrypt.hashpw(password, BCrypt.gensalt()));
-        user.setNickname(nickname != null ? nickname : username);
+        user.setNickname(nickname != null && !nickname.isBlank() ? nickname : username);
         user.setStatus(SystemConstants.USER_STATUS_NORMAL);
         user.setRole(SystemConstants.ROLE_BUYER);
 
-        userMapper.insert(user);
+        try {
+            userMapper.insert(user);
+        } catch (DuplicateKeyException e) {
+            throw new BusinessException(ResultCode.USER_ALREADY_EXIST);
+        }
+
         log.info("用户注册成功: username={}", username);
         return R.ok("注册成功");
     }
 
     @Override
     public R<String> login(String username, String password) {
+        if (username == null || username.isBlank()) {
+            throw new BusinessException(ResultCode.USERNAME_OR_PASSWORD_ERROR);
+        }
+        if (password == null || password.isBlank()) {
+            throw new BusinessException(ResultCode.USERNAME_OR_PASSWORD_ERROR);
+        }
+
+        username = username.trim();
+        log.info("登录请求: username={}", username);
+
         User user = userMapper.selectOne(
                 new LambdaQueryWrapper<User>().eq(User::getUsername, username)
         );
@@ -63,13 +96,19 @@ public class AuthServiceImpl implements AuthService {
             throw new BusinessException(ResultCode.USERNAME_OR_PASSWORD_ERROR);
         }
 
-        if (SystemConstants.USER_STATUS_DISABLED.equals(user.getStatus())) {
+        // fail-safe: 只有显式 NORMAL 状态才允许登录
+        if (!SystemConstants.USER_STATUS_NORMAL.equals(user.getStatus())) {
             throw new BusinessException("账号已被禁用");
         }
 
-        String role = user.getRole() != null ? user.getRole() : SystemConstants.ROLE_BUYER;
+        String role = user.getRole();
+        if (role == null) {
+            log.warn("用户角色为空, username={}, 默认使用BUYER", username);
+            role = SystemConstants.ROLE_BUYER;
+        }
+
         String token = JwtUtil.createToken(user.getId(), user.getUsername(),
-                java.util.Map.of("role", role));
+                Map.of("role", role));
         log.info("用户登录成功: username={}", username);
         return R.ok("登录成功", token);
     }

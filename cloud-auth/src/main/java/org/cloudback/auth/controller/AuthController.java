@@ -1,5 +1,6 @@
 package org.cloudback.auth.controller;
 
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.cloudback.auth.dto.LoginRequest;
 import org.cloudback.auth.dto.RegisterRequest;
@@ -23,13 +24,13 @@ public class AuthController {
 
     /** 用户注册 */
     @PostMapping("/register")
-    public R<String> register(@RequestBody RegisterRequest request) {
+    public R<String> register(@Valid @RequestBody RegisterRequest request) {
         return authService.register(request.username(), request.password(), request.nickname());
     }
 
     /** 用户登录，返回 JWT Token */
     @PostMapping("/login")
-    public R<String> login(@RequestBody LoginRequest request) {
+    public R<String> login(@Valid @RequestBody LoginRequest request) {
         return authService.login(request.username(), request.password());
     }
 }

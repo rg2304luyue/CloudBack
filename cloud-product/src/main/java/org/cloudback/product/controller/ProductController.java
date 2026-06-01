@@ -6,7 +6,6 @@ import org.cloudback.common.result.R;
 import org.cloudback.common.service.FileService;
 import org.cloudback.product.model.entity.Product;
 import org.cloudback.product.service.ProductService;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 

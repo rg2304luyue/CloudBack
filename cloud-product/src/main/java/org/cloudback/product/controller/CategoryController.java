@@ -32,8 +32,14 @@ public class CategoryController {
     public R<String> updateCategory(@RequestHeader("X-User-Role") String role,
                                     @PathVariable Long id,
                                     @RequestBody Category category) {
-        category.setId(id);
-        return categoryService.updateCategory(role, category);
+        // 不修改 Request Body，创建新对象传入 Service
+        Category updateCategory = new Category();
+        updateCategory.setId(id);
+        updateCategory.setName(category.getName());
+        updateCategory.setParentId(category.getParentId());
+        updateCategory.setIcon(category.getIcon());
+        updateCategory.setSort(category.getSort());
+        return categoryService.updateCategory(role, updateCategory);
     }
 
     /** DELETE /categories/{id} — 删除分类，有子分类时拒绝删除 */

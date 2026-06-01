@@ -25,8 +25,14 @@ public class JwtUtil {
     /** Token 有效期: 2 小时 */
     private static final long EXPIRE_SECONDS = 7200L;
 
-    /** 由 Spring 配置类调用，注入 JWT 密钥 */
+    /** 由 Spring 配置类调用，注入 JWT 密钥。启动时即校验，配置缺失立即报错而非运行时 500。 */
     public static void setSecret(String secret) {
+        if (secret == null || secret.isBlank()) {
+            throw new IllegalStateException("JWT_SECRET 环境变量未设置，请在 .env 中配置");
+        }
+        if (secret.length() < 32) {
+            throw new IllegalStateException("JWT_SECRET 长度不足，至少需要32字符以保证安全");
+        }
         SECRET = secret;
     }
 

@@ -24,16 +24,25 @@ public class PaymentController {
 
     private final PaymentService paymentService;
 
-    /** GET /payment/{orderNo} — 查询支付记录，若本地为待支付则主动向支付宝同步最新状态 */
+    /** GET /payment/{orderNo} — 纯查询支付记录（只读，不触发支付宝同步） */
     @GetMapping("/{orderNo}")
     public R<Payment> getPaymentByOrderNo(@PathVariable String orderNo) {
         return paymentService.getPaymentByOrderNo(orderNo);
     }
 
+    /** POST /payment/{orderNo}/sync — 主动向支付宝同步最新支付状态 */
+    @PostMapping("/{orderNo}/sync")
+    public R<Payment> syncPaymentStatus(@PathVariable String orderNo) {
+        return paymentService.syncPaymentStatus(orderNo);
+    }
+
     /** POST /payment/alipay — 发起支付宝电脑网站支付，返回支付表单 HTML（含 30 分钟超时） */
     @PostMapping("/alipay")
     public R<String> pay(@RequestBody CreatePaymentRequest request,
-                         @RequestHeader("X-User-Id") Long userId) {
+                         @RequestHeader(value = "X-User-Id", required = false) Long userId) {
+        if (userId == null) {
+            return R.fail("用户未登录");
+        }
         return paymentService.createPayForm(request.orderNo(), userId);
     }
 
@@ -56,7 +65,7 @@ public class PaymentController {
         return paymentService.handleAlipayNotify(params);
     }
 
-    /** GET /payment/return/alipay — 支付宝同步回跳（浏览器重定向），主动查询后重定向到前端结果页 */
+    /** GET /payment/return/alipay — 支付宝同步回跳（浏览器重定向），主动向支付宝查询最新状态并同步后重定向到前端 */
     @GetMapping("/return/alipay")
     public void returnAlipay(HttpServletRequest request,
                              HttpServletResponse response) throws Exception {
@@ -68,7 +77,8 @@ public class PaymentController {
 
         R<Payment> paymentResult;
         try {
-            paymentResult = paymentService.getPaymentByOrderNo(orderNo);
+            // 主动向支付宝查询并同步最新状态
+            paymentResult = paymentService.syncPaymentStatus(orderNo);
         } catch (Exception e) {
             log.warn("同步回跳查询支付状态异常: orderNo={}", orderNo, e);
             response.sendRedirect("http://localhost:4173/payment/result?error=query_failed");

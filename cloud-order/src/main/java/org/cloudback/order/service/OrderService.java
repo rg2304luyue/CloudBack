@@ -30,6 +30,9 @@ public interface OrderService {
     /** 按 orderNo 取消订单（供超时调度器调用） */
     void cancelOrderByNo(String orderNo);
 
+    /** DB 兜底扫描超时未支付订单（供 OrderTimeoutScheduler 调用），返回取消数量 */
+    int scanExpiredOrders();
+
     /** 卖家查看包含自己商品的订单 */
     R<List<Order>> getSellerOrders(Long sellerId, Integer page, Integer size);
 

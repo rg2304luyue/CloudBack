@@ -23,7 +23,14 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
-import java.util.*;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -52,7 +59,6 @@ public class ProductServiceImpl implements ProductService {
     /** 获取商品详情：布隆过滤器前置拦截 → 两级缓存(Caffeine+Redis) → DB；访问时异步递增浏览量 ZSET */
     @Override
     public R<Product> getProductDetail(Long productId) {
-        // 布隆过滤器拦截不存在的 ID
         if (!bloomFilter.mightContain(productId)) {
             throw new BusinessException(ResultCode.PRODUCT_NOT_EXIST);
         }
@@ -64,7 +70,7 @@ public class ProductServiceImpl implements ProductService {
                     if (p == null) throw new BusinessException(ResultCode.PRODUCT_NOT_EXIST);
                     return p;
                 },
-                300  // Redis 5分钟
+                300
         );
 
         try {
@@ -95,24 +101,19 @@ public class ProductServiceImpl implements ProductService {
             return R.ok(result, searchIds.size());
         }
 
-        // 1. 构建缓存 key
+        // 无 keyword，走 ID 缓存
         String cid = categoryId == null ? "all" : String.valueOf(categoryId);
-        String kw = keyword == null ? "" : keyword;
-        String idListKey = SystemConstants.REDIS_KEY_PREFIX + "product:ids:" + cid + ":" + kw;
+        String idListKey = SystemConstants.REDIS_KEY_PREFIX + "product:ids:" + cid;
 
-        // 2. 查 ID 列表（带缓存）
         @SuppressWarnings("unchecked")
         List<Long> allIds = productIdListTwoLevel.get(idListKey, List.class, () -> {
             LambdaQueryWrapper<Product> wrapper = new LambdaQueryWrapper<>();
-            wrapper.select(Product::getId);  // 只查 ID
+            wrapper.select(Product::getId);
             wrapper.eq(Product::getStatus, 1);
 
             if (categoryId != null && categoryId > 0) {
                 List<Long> categoryIds = categoryService.collectDescendantIds(categoryId);
                 wrapper.in(Product::getCategoryId, categoryIds);
-            }
-            if (keyword != null && !keyword.isEmpty()) {
-                wrapper.like(Product::getName, keyword);
             }
             wrapper.orderByDesc(Product::getSales);
 
@@ -125,7 +126,7 @@ public class ProductServiceImpl implements ProductService {
             return R.ok(Collections.emptyList(), 0);
         }
 
-        // 3. 加载全部商品（用于排序）
+        // 加载全部商品（用于排序）
         List<Product> allProducts = allIds.stream().map(id ->
                 productDetailTwoLevel.get(
                         SystemConstants.REDIS_KEY_PREFIX + "product:detail:" + id,
@@ -135,15 +136,14 @@ public class ProductServiceImpl implements ProductService {
                 )
         ).collect(Collectors.toList());
 
-        // 4. 排序
+        // 安全排序（null price 排最后）
         if ("price_asc".equals(sortBy)) {
-            allProducts.sort(Comparator.comparing(Product::getPrice));
+            allProducts.sort(Comparator.nullsLast(Comparator.comparing(Product::getPrice)));
         } else if ("price_desc".equals(sortBy)) {
-            allProducts.sort(Comparator.comparing(Product::getPrice).reversed());
+            allProducts.sort(Comparator.nullsLast(Comparator.comparing(Product::getPrice).reversed()));
         }
-        // "sales" 或默认 → ID 列表本来就是按销量排的，无需额外排序
 
-        // 5. 手动分页
+        // 手动分页
         int total = allProducts.size();
         int fromIndex = (page - 1) * size;
         if (fromIndex >= total) {
@@ -192,7 +192,7 @@ public class ProductServiceImpl implements ProductService {
         return R.ok(SystemConstants.ROLE_ADMIN.equals(role) ? "添加商品成功" : "添加成功，等待管理员审核");
     }
 
-    /** 修改商品：权限校验 → 卖家修改重新进入待审核 → 更新 DB → 驱逐缓存 → 同步索引（上架索引/下架删除） */
+    /** 修改商品：权限校验 → 卖家修改重新进入待审核 → 更新 DB → 驱逐缓存 → 同步索引 */
     @Override
     public R<String> updateProduct(Long userId, String role, Long id, ProductRequest request) {
         checkProductManagePermission(role);
@@ -211,8 +211,11 @@ public class ProductServiceImpl implements ProductService {
         product.setMainImage(request.mainImage());
         product.setImages(request.images());
         product.setSellerId(dbProduct.getSellerId());
+        // 管理员编辑保持原状态，卖家修改进入待审核
         if (SystemConstants.ROLE_SELLER.equals(role)) {
             product.setStatus(SystemConstants.PRODUCT_STATUS_PENDING);
+        } else {
+            product.setStatus(dbProduct.getStatus());
         }
 
         productMapper.updateById(product);
@@ -228,7 +231,7 @@ public class ProductServiceImpl implements ProductService {
         return R.ok(SystemConstants.ROLE_SELLER.equals(role) ? "已重新提交审核" : "更新商品成功");
     }
 
-    /** 逻辑删除商品：权限校验 → 逻辑删除 → 驱逐热门缓存和详情缓存 → 从 Meilisearch 索引移除 */
+    /** 逻辑删除商品：权限校验 → 逻辑删除 → 驱逐缓存 → 从 Meilisearch 索引移除 */
     @Override
     public R<String> deleteProduct(Long userId, String role, Long id) {
         checkProductManagePermission(role);
@@ -239,7 +242,6 @@ public class ProductServiceImpl implements ProductService {
         checkProductPermission(userId, role, dbProduct);
         productMapper.deleteById(id);
 
-        // 删除商品后，列表和热门缓存应失效
         hotProductsTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:hot");
         productDetailTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:detail:" + id);
 
@@ -249,7 +251,7 @@ public class ProductServiceImpl implements ProductService {
 
     // ==================== 审核 ====================
 
-    /** 管理员分页获取待审核商品列表，按创建时间升序（先提交的先审核） */
+    /** 管理员分页获取待审核商品列表，按创建时间升序 */
     @Override
     public R<List<Product>> getPendingProducts(Long page, Long size) {
         LambdaQueryWrapper<Product> wrapper = new LambdaQueryWrapper<>();
@@ -267,13 +269,13 @@ public class ProductServiceImpl implements ProductService {
         if (product == null) {
             throw new BusinessException(ResultCode.PRODUCT_NOT_EXIST);
         }
-        if (!SystemConstants.PRODUCT_STATUS_PENDING.equals(product.getStatus())) {
+        // null-safe 检查
+        if (product.getStatus() == null || !SystemConstants.PRODUCT_STATUS_PENDING.equals(product.getStatus())) {
             return R.fail("该商品无需审核或已处理");
         }
         product.setStatus(approved ? 1 : 0);
         productMapper.updateById(product);
 
-        // 审核商品后，列表和热门缓存应失效
         hotProductsTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:hot");
         productDetailTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:detail:" + id);
 
@@ -294,7 +296,6 @@ public class ProductServiceImpl implements ProductService {
                 SystemConstants.REDIS_KEY_PREFIX + "product:hot",
                 List.class,
                 () -> {
-                    // 原逻辑：ZSet 取 topId → 批量查
                     try {
                         Set<Object> topIds = redisTemplate.opsForZSet()
                                 .reverseRange(SystemConstants.PRODUCT_VIEWS_KEY, 0, 7);
@@ -304,19 +305,26 @@ public class ProductServiceImpl implements ProductService {
                                     .collect(Collectors.toList());
                             List<Product> list = productMapper.selectBatchIds(ids);
                             if (CollUtil.isNotEmpty(list)) {
-                                list.sort((a, b) -> ids.indexOf(a.getId()) - ids.indexOf(b.getId()));
+                                // 按 ZSet 排名顺序排序 O(n)，避免 indexOf O(n²)
+                                Map<Long, Integer> rankMap = new HashMap<>();
+                                for (int i = 0; i < ids.size(); i++) {
+                                    rankMap.put(ids.get(i), i);
+                                }
+                                list.sort(Comparator.comparingInt(p ->
+                                        rankMap.getOrDefault(p.getId(), Integer.MAX_VALUE)));
                                 return list;
                             }
                         }
                     } catch (Exception e) {
                         log.warn("Redis查询热门商品失败，降级为数据库查询", e);
                     }
-                    // 降级
+                    // 降级：按销量排序
                     LambdaQueryWrapper<Product> wrapper = new LambdaQueryWrapper<>();
                     wrapper.eq(Product::getStatus, 1)
-                            .orderByDesc(Product::getSales)
-                            .last("LIMIT 8");
-                    return productMapper.selectList(wrapper);
+                            .orderByDesc(Product::getSales);
+                    Page<Product> page = new Page<>(1, 8);
+                    productMapper.selectPage(page, wrapper);
+                    return page.getRecords();
                 },
                 300
         );
@@ -325,14 +333,12 @@ public class ProductServiceImpl implements ProductService {
 
     // ==================== 权限校验 ====================
 
-    /** 校验是否有商品管理权限（卖家或管理员），否则抛出 SELLER_ONLY 异常 */
     private void checkProductManagePermission(String role) {
         if (!SystemConstants.ROLE_SELLER.equals(role) && !SystemConstants.ROLE_ADMIN.equals(role)) {
             throw new BusinessException(ResultCode.SELLER_ONLY);
         }
     }
 
-    /** 校验商品操作权限：管理员可操作任何商品，卖家只能操作自己的商品 */
     private void checkProductPermission(Long userId, String role, Product product) {
         if (SystemConstants.ROLE_ADMIN.equals(role)) return;
         if (product.getSellerId() != null && product.getSellerId().equals(userId)) return;
@@ -341,15 +347,14 @@ public class ProductServiceImpl implements ProductService {
 
     // ==================== 库存操作（订单服务 Feign 调用） ====================
 
-    /** 原子扣减库存：UPDATE stock = stock - N, sales = sales + N WHERE stock >= N；事务提交后驱逐热门/详情缓存 */
+    /** 原子扣减库存：UPDATE stock = stock - N, sales = sales + N WHERE stock >= N；事务提交后驱逐缓存 */
     @Override
     @Transactional(rollbackFor = Exception.class)
     public R<String> deductStock(Long productId, Integer quantity) {
         int affected = productMapper.deductStockAtomically(productId, quantity);
         if (affected == 0) {
-            // 可能是商品不存在或库存不足，回查确认原因
             Product product = productMapper.selectById(productId);
-            if (product == null) {
+            if (product == null || (product.getDeleted() != null && product.getDeleted() == 1)) {
                 throw new BusinessException(ResultCode.PRODUCT_NOT_EXIST);
             }
             throw new BusinessException(ResultCode.STOCK_INSUFFICIENT);
@@ -365,11 +370,15 @@ public class ProductServiceImpl implements ProductService {
         return R.ok("扣减库存成功");
     }
 
-    /** 回滚库存：UPDATE stock = stock + N, sales = sales - N；事务提交后驱逐热门/详情缓存 */
+    /** 回滚库存：UPDATE stock = stock + N, sales = sales - N，校验影响行数；事务提交后驱逐缓存 */
     @Override
     @Transactional(rollbackFor = Exception.class)
     public R<String> restoreStock(Long productId, Integer quantity) {
-        productMapper.restoreStock(productId, quantity);
+        int affected = productMapper.restoreStock(productId, quantity);
+        if (affected == 0) {
+            log.warn("回滚库存影响0行，商品可能已删除或不存在: productId={}", productId);
+            throw new BusinessException(ResultCode.PRODUCT_NOT_EXIST);
+        }
 
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
@@ -381,7 +390,7 @@ public class ProductServiceImpl implements ProductService {
         return R.ok("回滚库存成功");
     }
 
-    /** 启动时加载所有商品 ID 到布隆过滤器，拦截不存在 ID 的查询请求 */
+    /** 启动时加载所有商品 ID 到布隆过滤器 */
     @PostConstruct
     public void initBloomFilter() {
         List<Product> allProducts = productMapper.selectList(
@@ -393,7 +402,7 @@ public class ProductServiceImpl implements ProductService {
         log.info("已加载 {} 条商品 ID 到布隆过滤器", allProducts.size());
     }
 
-    /** 启动时将所有上架商品重建 Meilisearch 全文索引 */
+    /** 启动时重建 Meilisearch 全文索引 */
     @PostConstruct
     public void initSearchIndex() {
         try {
@@ -408,7 +417,7 @@ public class ProductServiceImpl implements ProductService {
         }
     }
 
-    /** 按卖家 ID 获取商品列表（仅返回 ID，供订单服务 Feign 内部查询卖家订单时反查使用） */
+    /** 按卖家 ID 获取商品列表（仅返回 ID，供订单服务 Feign 内部查询使用） */
     @Override
     public R<List<Product>> getProductsBySellerId(Long sellerId) {
         LambdaQueryWrapper<Product> wrapper = new LambdaQueryWrapper<Product>()
@@ -418,7 +427,7 @@ public class ProductServiceImpl implements ProductService {
         return R.ok(products);
     }
 
-    /** Meilisearch 全文搜索：搜索返回商品 ID 列表 → 从两级缓存加载商品详情 */
+    /** Meilisearch 全文搜索 */
     @Override
     public R<List<Product>> search(String keyword, Long categoryId, int page, int size) {
         List<Long> searchIds = searchService.search(keyword, categoryId, page, size);
@@ -435,7 +444,7 @@ public class ProductServiceImpl implements ProductService {
         return R.ok(result, searchIds.size());
     }
 
-    /** 搜索建议（自动补全）：基于 Meilisearch 商品名前缀匹配 */
+    /** 搜索建议（自动补全） */
     @Override
     public R<List<String>> suggest(String prefix, int limit) {
         return R.ok(searchService.suggest(prefix, limit));

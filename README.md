@@ -172,6 +172,7 @@ Gateway 白名单外的所有请求强制携带有效 JWT，解析失败返回 4
 | `BaseEntity` | 实体基类，`id`（雪花算法）、`createTime`、`updateTime`、`deleted`（逻辑删除），由 `AutoFillMetaObjectHandler` 自动填充 |
 | `BusinessException` | 业务异常，携带 `code` + `message`，由 `GlobalExceptionHandler` 统一捕获返回 `R.fail()` |
 | `GlobalExceptionHandler` | `@RestControllerAdvice`，处理 BusinessException / BindException / 兜底 Exception |
+| `FeignExceptionHandler` | `@RestControllerAdvice` + `@ConditionalOnClass`，仅在 Feign 可用时加载，处理 Feign 调用失败（避免无 Feign 依赖的模块启动失败） |
 | `JwtUtil` | HMAC-SHA256 签发/解析/验证 JWT，token 有效期 2 小时，claims 含 userId、username、role |
 | `SystemConstants` | 所有常量：Redis Key 前缀、订单状态码、Kafka Topic 名、角色字符串 |
 | `User` | 共享 User 实体（auth 和 user 服务共用），字段：username、password(BCrypt)、role、status |
@@ -430,12 +431,13 @@ Step 4: Feign → ProductFeignClient.deductStock() × N（先扣库存）
     WHERE id = ? AND stock >= ?（WHERE 条件防超卖）
   - 任一失败 → 返回 BusinessException，事务中止
 
-Step 5: saveOrderAndItems（写订单 + 明细 + 清空购物车 + Kafka + Redis）
+Step 5: saveOrderAndItems（写订单 + 明细 → 事务提交后再执行非 DB 副作用）
   - INSERT order_info（orderMapper.insert）
   - INSERT order_item × N（orderItemMapper.insert），每条保存商品名称/图片/价格快照
-  - Feign → CartFeignClient.clearCart(userId) 清空购物车
-  - Redis: 将 orderNo → 超时时间戳存入 ZSet，供定时任务扫描
-  - Kafka.send("order-create", { orderNo, userId, totalAmount })
+  - 事务提交后（TransactionSynchronization.afterCommit）：
+    - Feign → CartFeignClient.clearCart(userId) 清空购物车
+    - Redis: 将 orderNo → 超时时间戳存入 ZSet，供定时任务扫描
+    - Kafka.send("order-create", { orderNo, userId, totalAmount })
 
 Step 6（Step 4-5 中任一步失败）: 回滚已扣库存
   - 逐项调用 ProductFeignClient.restoreStock(productId, quantity)
@@ -444,7 +446,7 @@ Step 6（Step 4-5 中任一步失败）: 回滚已扣库存
 Step 7: 返回 Order 实体
 ```
 
-**关键设计变更**：先扣库存再写订单（防止超卖）；`saveOrderAndItems` 独立 `@Transactional` 确保 DB 操作原子性；库存扣减不在事务内，失败时主动回滚；下单幂等 Token 防止重复提交。
+**关键设计**：`createOrder` 全程 `@Transactional`，确保订单和明细写入的原子性；先扣库存再写订单（防止超卖）；非 DB 副作用（清购物车/Kafka/Redis）通过 `TransactionSynchronization.afterCommit` 延迟到事务提交后执行；下单幂等 Token 防止重复提交；库存扣减失败时主动回滚已扣库存。
 
 ### 6. 支付（支付宝沙箱页面支付）
 
@@ -471,24 +473,25 @@ Step 7: 返回 Order 实体
 
   同步回跳（浏览器）:
     GET /api/payment/return/alipay?out_trade_no=xxx&trade_no=xxx&...
-    → 提取 orderNo → getPaymentByOrderNo()
-      → 发现本地 status=0 → 调 alipay.trade.query API 查支付宝
+    → 提取 orderNo → syncPaymentStatus()（主动向支付宝查询最新状态并同步）
       → 返回 TRADE_SUCCESS → 更新 payment.status=1, tradeNo, payTime
       → 发送 Kafka "payment-result" → 302 跳转前端支付结果页
 
   异步通知（服务端，需公网可达）:
     POST /api/payment/notify/alipay
-    → 验签（AlipaySignature.rsaCheckV1, RSA2）
+    → 验签（AlipaySignature.rsaCheckV1, RSA2）+ 校验 app_id + 校验支付金额
     → trade_status == TRADE_SUCCESS → 同上更新本地状态 → 返回 "success"
+    → trade_status == TRADE_CLOSED → 标记支付失败（status=2）
 
 cloud-order 消费 payment-result:
   1. status == "SUCCESS" 且 order 为 UNPAID
      → UPDATE order_info SET status = 1 (PAID), pay_time = now()
   2. 条件更新防止覆盖已取消/已完成的订单
+  3. 反序列化失败的消息直接丢弃（无效格式），DB 异常抛出触发 Kafka 重试
 
 查询支付记录 GET /api/payment/{orderNo}:
-  若本地记录仍为待支付 → 主动调 alipay.trade.query 查支付宝
-  → 确认已付则更新本地状态并通知订单服务
+  若本地记录仍为待支付 → 自动调用 syncPaymentStatus() 同步支付宝状态
+  → 前端支付结果页依赖此行为轮询确认支付结果
 ```
 
 **支付宝配置**：沙箱网关 `openapi-sandbox.dl.alipaydev.com`，RSA2 签名，公钥模式。密钥通过 `.env` 注入，单行 PKCS8 格式。应用私钥和支付宝公钥均不含 `----BEGIN/END----` 标记。
@@ -578,17 +581,24 @@ PATCH /api/admin/users/{id}/password (JSON body: {newPassword})
   3. UPDATE order_info SET status = 3 (COMPLETED)
 ```
 
-### 13. 订单超时自动取消
+### 13. 订单超时自动取消（双层保障）
 
 ```text
-OrderTimeoutScheduler (@Scheduled fixedRate=60000ms)
-  1. SELECT * FROM order_info WHERE status = 0 AND create_time <= now() - 30min
-  2. 对每个超时订单独立事务处理：
-     a. UPDATE order_info SET status = 4 (CANCELLED)
-     b. 查询 order_item 明细
-     c. 逐项调用 ProductFeignClient.restoreStock() 回滚库存
-     - 若 Feign 失败：事务回滚 → 下次定时任务重试该订单
-     - 每个订单独立 @Transactional，互不影响
+第一层 — Redis ZSet 高频扫描（@Scheduled fixedRate=1000ms）:
+  1. ZRANGEBYSCORE cloud:order:timeout 0 NOW → 取过期订单（每次最多 20 条）
+  2. ZREM 移除 → 逐个调用 cancelOrderByNo()
+  3. 失败不中断，继续处理下一个
+
+第二层 — DB 兜底扫描（@Scheduled fixedRate=300000ms）:
+  1. SELECT * FROM order_info WHERE status=0 AND create_time < NOW() - 30min LIMIT 20
+  2. 逐个取消并回滚库存
+  3. 防止 Redis ZSet 数据丢失（重启/故障恢复后依然能取消超时订单）
+
+取消订单：
+  a. UPDATE order_info SET status = 4 (CANCELLED)
+  b. 查询 order_item 明细
+  c. 逐项调用 ProductFeignClient.restoreStock() 回滚库存（best-effort，单条失败不中止其余）
+  d. REMOVE Redis ZSet 中的 orderNo
 ```
 
 ### 14. 管理员看板
@@ -739,7 +749,8 @@ GET /api/admin/stats（仅 ADMIN）
 | GET | `/api/orders/stats` | order | 内部 | Feign 获取订单统计（总数/总金额/待支付数） |
 | GET | `/api/admin/stats` | user | 是 | 管理员看板数据（聚合用户/商品/订单统计） |
 | POST | `/api/payment/alipay` | payment | 是 | 发起支付（JSON body: orderNo） |
-| GET | `/api/payment/{orderNo}` | payment | 是 | 查询支付记录（待支付时主动查支付宝） |
+| GET | `/api/payment/{orderNo}` | payment | 是 | 查询支付记录（待支付时自动同步支付宝状态） |
+| POST | `/api/payment/{orderNo}/sync` | payment | 是 | 主动向支付宝查询并同步支付状态 |
 | POST | `/api/payment/notify/alipay` | payment | 否 | 支付宝异步通知回调 |
 | GET | `/api/payment/return/alipay` | payment | 否 | 支付宝同步回跳（查支付→跳前端） |
 
@@ -842,6 +853,33 @@ ALIPAY_RETURN_URL=http://localhost:4173/payment/result
 
 ---
 
+## Claude Code 开发配置
+
+### .env 安全保护
+
+项目通过 Skill + PreToolUse Hook 双层机制保护 `.env` 文件不被 AI 读取或修改：
+
+```text
+CloudBack/.claude/
+├── skills/
+│   └── env-security.md         # Skill：指示 Claude 只读 .env.example，忽略 .env
+├── hooks/
+│   └── block-env.sh            # Hook：硬性拦截对 .env 文件的 Read/Write/Edit/Glob/Grep/Bash
+└── settings.json               # 注册 PreToolUse Hook
+```
+
+- `.env.example`：配置模板（仅含 key 和注释，不含真实密钥），已纳入 Git
+- `docker/.env.example`：Docker Compose 环境变量模板
+- `.env` 和 `docker/.env`：真实密钥文件，已被 `.gitignore` 忽略
+- CloudFront 的 `.claude/settings.json` 通过相对路径引用此 Hook
+
+### 打印日志安全
+
+- `AlipayProperties.privateKey` 使用 `@ToString.Exclude`（Lombok），防止日志泄露 RSA 私钥
+- JWT 密钥在启动时校验（长度 <32 字符或为空则立即报错而非运行时 500）
+
+---
+
 ## 部署
 
 ### 虚拟机（Ubuntu）
@@ -910,7 +948,10 @@ mvn spring-boot:run -pl cloud-payment
 | 上传图片后页面不显示 | MinIO Bucket 无公开读策略 | MinioConfig 首次启动自动创建 Bucket 并设置策略 |
 | MinIO 启动报 invalid hostname | endpoint 含 `host:port` 格式 | MinioConfig 自动拆分 host 和 port 传入 SDK |
 | 修改商品/头像后刷新才看到变更 | 前端无自动刷新 | 前端已加 30s 静默轮询 |
-| 支付后订单仍显示未支付 | 异步通知无法到达本地 | 查询支付记录时主动调支付宝 API 查状态 |
+| 支付后订单仍显示未支付 | 异步通知无法到达本地（localhost 不可公网访问） | 查询支付记录时自动触发主动查询支付宝 API 同步状态 |
+| 订单超时未自动取消 | Redis ZSet 数据因重启丢失 | 已实现 DB 兜底扫描（每 5 分钟），双重保障 |
+| 无 Feign 的模块启动报 FeignException | GlobalExceptionHandler 硬引用 Feign | 已拆分为 FeignExceptionHandler + @ConditionalOnClass |
+| 编译报 R.ok Long 参数不匹配 | R.ok(T, Integer) 不接受 long | total 参数使用 (int) 强制转换 |
 | 支付点击后跳转 Alipay 错误页 | return_url 被支付宝拒绝 | 使用前端地址（localhost:4173）作为回跳，不经过网关 |
 | 支付宝私钥配置后启动报错 | PKCS8 密钥含换行 | 将密钥合并为单行，去除 BEGIN/END 标记 |
 | 支付同步回跳 404 | 前端预览端口非 5173 | 配置 ALIPAY_RETURN_URL 为实际端口（如 :4173） |

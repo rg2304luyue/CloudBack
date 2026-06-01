@@ -2,75 +2,64 @@
 # ============================================================
 # PreToolUse Hook: block access to .env files
 # Allows .env.example, blocks all other .env* files
+# No external dependencies (pure bash + grep)
 # ============================================================
 
 set -euo pipefail
 
 INPUT=$(cat)
-TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // ""')
-TOOL_INPUT=$(echo "$INPUT" | jq -c '.tool_input // {}')
 
-# ---------- check if path is a blocked .env ----------
+# Extract tool_name from JSON without jq
+TOOL_NAME=$(echo "$INPUT" | grep -oP '"tool_name"\s*:\s*"\K[^"]*' || echo "")
+
+# ---------- check if a path references a blocked .env ----------
+# Returns 0 (true) if blocked, 1 (false) if allowed
 is_blocked_env() {
     local path="$1"
-    local basename
-    basename=$(basename "$path")
+    local basename="${path##*/}"
 
     # ALLOW: .env.example
-    if [[ "$basename" == .env.example ]] || [[ "$basename" == .env.example.* ]]; then
-        return 1
-    fi
-    if echo "$path" | grep -q '\.env\.example'; then
-        return 1
-    fi
+    case "$basename" in
+        .env.example|.env.example.*) return 1 ;;
+    esac
 
-    # BLOCK: .env, .env.local, .env.prod, .env.development ...
-    if [[ "$basename" == .env ]] || [[ "$basename" == .env.* ]]; then
-        return 0
-    fi
+    # ALLOW: path contains .env.example anywhere
+    case "$path" in
+        *.env.example*) return 1 ;;
+    esac
 
-    # BLOCK: path segments ending with /.env (e.g. docker/.env)
-    if echo "$path" | grep -qE '(^|/)\.env($|/)'; then
-        return 0
-    fi
+    # BLOCK: .env (exact), .env.local, .env.prod, etc.
+    case "$basename" in
+        .env|.env.*) return 0 ;;
+    esac
 
     return 1
 }
 
-# ---------- extract file paths from tool input ----------
-extract_paths() {
-    local input="$1"; local tool="$2"
+# ---------- extract relevant path from tool input ----------
+extract_path() {
+    local tool="$1"
     case "$tool" in
         Read|Write|Edit)
-            echo "$input" | jq -r '.file_path // ""' ;;
+            grep -oP '"file_path"\s*:\s*"\K[^"]*' <<< "$INPUT" || echo "" ;;
         Glob)
-            echo "$input" | jq -r '.pattern // ""' ;;
+            grep -oP '"pattern"\s*:\s*"\K[^"]*' <<< "$INPUT" || echo "" ;;
         Grep)
-            echo "$input" | jq -r '.path // ""' ;;
+            grep -oP '"path"\s*:\s*"\K[^"]*' <<< "$INPUT" || echo "" ;;
         Bash)
-            echo "$input" | jq -r '.command // ""' | grep -oP '\S*\.env\S*' || true ;;
+            grep -oP '"command"\s*:\s*"\K[^"]*' <<< "$INPUT" || echo "" ;;
+        *)
+            echo "" ;;
     esac
 }
 
 # ---------- main ----------
-BLOCKED=""
-PATHS=$(extract_paths "$TOOL_INPUT" "$TOOL_NAME")
+TARGET=$(extract_path "$TOOL_NAME")
 
-while IFS= read -r path; do
-    [ -z "$path" ] || [ "$path" = "null" ] && continue
-    if is_blocked_env "$path"; then
-        BLOCKED="$path"
-        break
-    fi
-done <<< "$PATHS"
-
-if [ -n "$BLOCKED" ]; then
-    jq -n --arg path "$BLOCKED" '{
-        permissionDecision: "deny",
-        reason: "🚫 .env files are blocked (contains secrets). Use .env.example instead.",
-        blockedPath: $path
-    }'
+if [ -n "$TARGET" ] && is_blocked_env "$TARGET"; then
+    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"🚫 .env files are blocked (contains secrets). Use .env.example instead."}}'
     exit 0
 fi
 
-jq -n '{ permissionDecision: "allow" }'
+# Allow
+printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}'

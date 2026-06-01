@@ -87,11 +87,12 @@ public class SearchServiceImpl implements SearchService {
                     .page(page)
                     .hitsPerPage(size);
 
-            // 只搜已上架商品
-            builder.filter(new String[]{"status = 1"});
+            // 构建过滤条件（避免覆盖）
+            String filter = "status = 1";
             if (categoryId != null && categoryId > 0) {
-                builder.filter(new String[]{"status = 1 AND categoryId = " + categoryId});
+                filter += " AND categoryId = " + categoryId;
             }
+            builder.filter(new String[]{filter});
 
             Searchable result = getIndex().search(builder.build());
             return result.getHits().stream()

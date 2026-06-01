@@ -1,6 +1,7 @@
 package org.cloudback.payment.mq;
 
 import com.alibaba.fastjson2.JSON;
+import com.alibaba.fastjson2.JSONException;
 import com.alibaba.fastjson2.JSONObject;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -28,16 +29,35 @@ public class OrderCreateConsumer {
     @KafkaListener(topics = SystemConstants.KAFKA_TOPIC_ORDER_CREATE, groupId = "payment-consumer-group")
     public void onOrderCreate(String message) {
         log.info("收到订单创建消息: {}", message);
+
+        String orderNo;
+        Long userId;
+        BigDecimal totalAmount;
         try {
             JSONObject msg = JSON.parseObject(message);
-            String orderNo = msg.getString("orderNo");
-            Long userId = msg.getLong("userId");
-            BigDecimal totalAmount = msg.getBigDecimal("totalAmount");
+            orderNo = msg.getString("orderNo");
+            userId = msg.getLong("userId");
+            totalAmount = msg.getBigDecimal("totalAmount");
+        } catch (JSONException e) {
+            log.error("订单创建消息反序列化失败, 丢弃无效消息: {}", message, e);
+            return;
+        }
 
+        if (orderNo == null || userId == null || totalAmount == null) {
+            log.error("订单创建消息缺少必要字段: orderNo={}, userId={}, amount={}", orderNo, userId, totalAmount);
+            return;
+        }
+        if (totalAmount.compareTo(BigDecimal.ZERO) <= 0) {
+            log.error("订单金额无效: orderNo={}, amount={}", orderNo, totalAmount);
+            return;
+        }
+
+        try {
             paymentService.processPayment(orderNo, userId, totalAmount);
             log.info("待支付记录已创建: orderNo={}", orderNo);
         } catch (Exception e) {
-            log.error("创建待支付记录异常", e);
+            log.error("创建待支付记录失败, 消息将被重试: orderNo={}", orderNo, e);
+            throw e;
         }
     }
 }
