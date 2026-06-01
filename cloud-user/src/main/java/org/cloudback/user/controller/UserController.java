@@ -88,12 +88,7 @@ public class UserController {
     /** 上传头像到 MinIO，返回可访问的 URL */
     @PostMapping("/me/avatar")
     public R<String> uploadAvatar(@RequestParam("file") MultipartFile file) {
-        try {
-            String url = fileService.upload(file, "avatar");
-            return R.ok(url);
-        } catch (Exception e) {
-            log.error("上传头像失败", e);
-            return R.fail("上传失败，请重试");
-        }
+        String url = fileService.upload(file, "avatar");
+        return R.ok(url);
     }
 }

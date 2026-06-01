@@ -98,7 +98,8 @@ public class ProductServiceImpl implements ProductService {
                             () -> productMapper.selectById(id),
                             300))
                     .collect(Collectors.toList());
-            return R.ok(result, searchIds.size());
+            long total = searchService.searchCount(keyword, categoryId);
+            return R.ok(result, (int) total);
         }
 
         // 无 keyword，走 ID 缓存
@@ -168,16 +169,11 @@ public class ProductServiceImpl implements ProductService {
 
     /** 添加商品：管理员直接上架，卖家需审核；写入后更新布隆过滤器、驱逐热门缓存、同步 Meilisearch */
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public R<String> addProduct(Long userId, String role, ProductRequest request) {
         checkProductManagePermission(role);
         Product product = new Product();
-        product.setCategoryId(request.categoryId());
-        product.setName(request.name());
-        product.setDescription(request.description());
-        product.setPrice(request.price());
-        product.setStock(request.stock());
-        product.setMainImage(request.mainImage());
-        product.setImages(request.images());
+        applyProductRequest(product, request);
         product.setSellerId(userId);
         product.setSales(0);
         product.setStatus(SystemConstants.ROLE_ADMIN.equals(role) ? 1 : SystemConstants.PRODUCT_STATUS_PENDING);
@@ -194,6 +190,7 @@ public class ProductServiceImpl implements ProductService {
 
     /** 修改商品：权限校验 → 卖家修改重新进入待审核 → 更新 DB → 驱逐缓存 → 同步索引 */
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public R<String> updateProduct(Long userId, String role, Long id, ProductRequest request) {
         checkProductManagePermission(role);
         Product dbProduct = productMapper.selectById(id);
@@ -203,13 +200,7 @@ public class ProductServiceImpl implements ProductService {
         checkProductPermission(userId, role, dbProduct);
         Product product = new Product();
         product.setId(id);
-        product.setCategoryId(request.categoryId());
-        product.setName(request.name());
-        product.setDescription(request.description());
-        product.setPrice(request.price());
-        product.setStock(request.stock());
-        product.setMainImage(request.mainImage());
-        product.setImages(request.images());
+        applyProductRequest(product, request);
         product.setSellerId(dbProduct.getSellerId());
         // 管理员编辑保持原状态，卖家修改进入待审核
         if (SystemConstants.ROLE_SELLER.equals(role)) {
@@ -264,6 +255,7 @@ public class ProductServiceImpl implements ProductService {
 
     /** 审核商品：通过→上架并索引到 Meilisearch，拒绝→下架并从索引移除；驱逐相关缓存 */
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public R<String> reviewProduct(Long id, boolean approved) {
         Product product = productMapper.selectById(id);
         if (product == null) {
@@ -329,6 +321,17 @@ public class ProductServiceImpl implements ProductService {
                 300
         );
         return R.ok(products);
+    }
+
+    /** 将 ProductRequest 的公共字段映射到 Product 实体 */
+    private void applyProductRequest(Product product, ProductRequest request) {
+        product.setCategoryId(request.categoryId());
+        product.setName(request.name());
+        product.setDescription(request.description());
+        product.setPrice(request.price());
+        product.setStock(request.stock());
+        product.setMainImage(request.mainImage());
+        product.setImages(request.images());
     }
 
     // ==================== 权限校验 ====================
@@ -441,7 +444,8 @@ public class ProductServiceImpl implements ProductService {
                         () -> productMapper.selectById(id),
                         300))
                 .collect(Collectors.toList());
-        return R.ok(result, searchIds.size());
+        long total = searchService.searchCount(keyword, categoryId);
+        return R.ok(result, (int) total);
     }
 
     /** 搜索建议（自动补全） */

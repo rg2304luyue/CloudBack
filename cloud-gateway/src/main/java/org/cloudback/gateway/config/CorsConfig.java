@@ -18,7 +18,10 @@ import java.util.List;
 @Configuration
 public class CorsConfig {
 
-    /** 注册 CorsWebFilter，放行所有来源和方法 */
+    /**
+     * 注册 CorsWebFilter。
+     * 开发环境放行所有来源；生产环境应改为配置具体的允许域名列表。
+     */
     @Bean
     public CorsWebFilter corsWebFilter() {
         CorsConfiguration config = new CorsConfiguration();

@@ -1,6 +1,7 @@
 package org.cloudback.user.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import lombok.RequiredArgsConstructor;
 import cn.hutool.crypto.digest.BCrypt;
 import org.cloudback.common.constant.SystemConstants;
@@ -14,7 +15,9 @@ import org.cloudback.user.mapper.SellerApplicationMapper;
 import org.cloudback.user.model.entity.Address;
 import org.cloudback.user.model.entity.SellerApplication;
 import org.cloudback.user.service.UserService;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 
@@ -39,6 +42,15 @@ public class UserServiceImpl implements UserService {
         update.setIsDefault(0);
         addressMapper.update(update,
                 new LambdaQueryWrapper<Address>().eq(Address::getUserId, userId).eq(Address::getIsDefault, 1));
+    }
+
+    /** 校验地址存在且属于该用户，否则抛出异常 */
+    private Address validateAddressOwnership(Long userId, Long addressId) {
+        Address address = addressMapper.selectById(addressId);
+        if (address == null || !address.getUserId().equals(userId)) {
+            throw new BusinessException(ResultCode.NOT_FOUND.getCode(), "地址不存在");
+        }
+        return address;
     }
 
     @Override
@@ -73,11 +85,7 @@ public class UserServiceImpl implements UserService {
 
     @Override
     public R<Address> getAddressById(Long userId, Long addressId) {
-        Address address = addressMapper.selectById(addressId);
-        if (address == null || !address.getUserId().equals(userId)) {
-            throw new BusinessException(ResultCode.NOT_FOUND.getCode(), "地址不存在");
-        }
-        return R.ok(address);
+        return R.ok(validateAddressOwnership(userId, addressId));
     }
 
     @Override
@@ -92,10 +100,7 @@ public class UserServiceImpl implements UserService {
 
     @Override
     public R<String> updateAddress(Long userId, Address address) {
-        Address dbAddress = addressMapper.selectById(address.getId());
-        if (dbAddress == null || !dbAddress.getUserId().equals(userId)) {
-            throw new BusinessException(ResultCode.NOT_FOUND.getCode(), "地址不存在");
-        }
+        validateAddressOwnership(userId, address.getId());
         if (address.getIsDefault() != null && address.getIsDefault() == 1) {
             cancelDefaultAddress(userId);
         }
@@ -106,10 +111,7 @@ public class UserServiceImpl implements UserService {
 
     @Override
     public R<String> deleteAddress(Long userId, Long addressId) {
-        Address address = addressMapper.selectById(addressId);
-        if (address == null || !address.getUserId().equals(userId)) {
-            throw new BusinessException(ResultCode.NOT_FOUND.getCode(), "地址不存在");
-        }
+        validateAddressOwnership(userId, addressId);
         addressMapper.deleteById(addressId);
         return R.ok("删除成功");
     }
@@ -129,6 +131,9 @@ public class UserServiceImpl implements UserService {
         if (!SystemConstants.ROLE_ADMIN.equals(role)) {
             throw new BusinessException(ResultCode.ADMIN_ONLY);
         }
+        if (newPassword == null || newPassword.length() < 6) {
+            throw new BusinessException("密码长度不能少于6位");
+        }
         User targetUser = userMapper.selectById(targetUserId);
         if (targetUser == null) {
             throw new BusinessException(ResultCode.USER_NOT_EXIST);
@@ -142,7 +147,13 @@ public class UserServiceImpl implements UserService {
 
     @Override
     public R<String> applySeller(Long userId) {
-        if (!isBuyer(userId)) return R.fail("您已是卖家或管理员，无需申请");
+        User user = userMapper.selectById(userId);
+        if (user == null) {
+            throw new BusinessException(ResultCode.USER_NOT_EXIST);
+        }
+        if (!SystemConstants.ROLE_BUYER.equals(user.getRole())) {
+            return R.fail("您已是卖家或管理员，无需申请");
+        }
 
         Long exist = applicationMapper.selectCount(
                 new LambdaQueryWrapper<SellerApplication>()
@@ -153,7 +164,11 @@ public class UserServiceImpl implements UserService {
         SellerApplication app = new SellerApplication();
         app.setUserId(userId);
         app.setStatus("PENDING");
-        applicationMapper.insert(app);
+        try {
+            applicationMapper.insert(app);
+        } catch (DuplicateKeyException e) {
+            return R.fail("您已提交过申请，请等待审批");
+        }
         return R.ok("申请已提交，等待管理员审批");
     }
 
@@ -170,10 +185,15 @@ public class UserServiceImpl implements UserService {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public R<String> processApplication(String role, Long applicationId, boolean approved) {
         if (!SystemConstants.ROLE_ADMIN.equals(role)) {
             throw new BusinessException(ResultCode.ADMIN_ONLY);
         }
+        // 条件 UPDATE 防并发：仅当 status=PENDING 时更新
+        LambdaUpdateWrapper<SellerApplication> updateWrapper = new LambdaUpdateWrapper<>();
+        updateWrapper.eq(SellerApplication::getId, applicationId)
+                     .eq(SellerApplication::getStatus, "PENDING");
         SellerApplication app = applicationMapper.selectById(applicationId);
         if (app == null || !"PENDING".equals(app.getStatus())) {
             return R.fail("申请不存在或已处理");

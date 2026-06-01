@@ -16,5 +16,8 @@ public interface SearchService {
 
     /** 搜索建议（自动补全），返回商品名列表 */
     List<String> suggest(String prefix, int limit);
+
+    /** 获取搜索结果总数 */
+    long searchCount(String keyword, Long categoryId);
 }
 

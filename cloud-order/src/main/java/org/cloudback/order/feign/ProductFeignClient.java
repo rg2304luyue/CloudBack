@@ -27,7 +27,7 @@ public interface ProductFeignClient {
     @GetMapping("/products/{id}")
     R<ProductDTO> getProductDetail(@PathVariable Long id);
 
-    /** GET /products/seller/{sellerId} — 获取卖家商品 ID 列表（卖家查订单时反查关联） */
-    @GetMapping("/products/seller/{sellerId}")
-    R<List<ProductDTO>> getProductsBySellerId(@PathVariable Long sellerId);
+    /** GET /products/seller?sellerId= — 获取卖家商品 ID 列表（卖家查订单时反查关联） */
+    @GetMapping("/products/seller")
+    R<List<ProductDTO>> getProductsBySellerId(@RequestParam Long sellerId);
 }

@@ -104,6 +104,30 @@ public class SearchServiceImpl implements SearchService {
         }
     }
 
+    /** 获取搜索结果总数，使用 rawSearch 解析 JSON 中的 estimatedTotalHits */
+    @Override
+    public long searchCount(String keyword, Long categoryId) {
+        try {
+            SearchRequest.SearchRequestBuilder builder = SearchRequest.builder()
+                    .q(keyword)
+                    .page(1)
+                    .hitsPerPage(1);
+
+            String filter = "status = 1";
+            if (categoryId != null && categoryId > 0) {
+                filter += " AND categoryId = " + categoryId;
+            }
+            builder.filter(new String[]{filter});
+
+            String rawResult = getIndex().rawSearch(builder.build());
+            JSONObject json = JSONObject.parseObject(rawResult);
+            return json.getLongValue("estimatedTotalHits");
+        } catch (Exception e) {
+            log.error("Meilisearch 搜索计数异常: keyword={}", keyword, e);
+            return 0;
+        }
+    }
+
     @Override
     public List<String> suggest(String prefix, int limit) {
         try {

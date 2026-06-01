@@ -38,6 +38,7 @@ public class CartServiceImpl implements CartService {
     private final RedisTemplate<String, Object> redisTemplate;
     private final ProductFeignClient productFeignClient;
     private static final long CART_TTL_DAYS = 7;
+    private static final int CART_QUANTITY_MAX = 999;
 
     private final TwoLevelCacheService cartTwoLevel;
 
@@ -50,8 +51,14 @@ public class CartServiceImpl implements CartService {
     /** 添加商品到购物车，已存在则累加数量，通过 Feign 查询商品信息 */
     @Override
     public R<String> addItem(Long userId, Long productId, Integer quantity) {
+        if (quantity == null || quantity <= 0) {
+            throw new BusinessException("商品数量必须大于0");
+        }
         R<CartItem> result = productFeignClient.getProductDetail(productId);
         if (result.getCode() != 200 || result.getData() == null) {
+            if (result.getCode() == ResultCode.SERVICE_UNAVAILABLE.getCode()) {
+                throw new BusinessException(ResultCode.SERVICE_UNAVAILABLE);
+            }
             throw new BusinessException(ResultCode.PRODUCT_NOT_EXIST);
         }
         CartItem productInfo = result.getData();
@@ -87,6 +94,13 @@ public class CartServiceImpl implements CartService {
     /** 更新商品数量 */
     @Override
     public R<String> updateQuantity(Long userId, Long productId, Integer quantity) {
+        if (quantity == null || quantity <= 0) {
+            throw new BusinessException("商品数量必须大于0");
+        }
+        if (quantity > CART_QUANTITY_MAX) {
+            throw new BusinessException("商品数量不能超过" + CART_QUANTITY_MAX);
+        }
+
         String key = cartKey(userId);
         String field = String.valueOf(productId);
 

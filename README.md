@@ -109,7 +109,7 @@ CloudBack/
 ├── cloud-payment/  :8086       # 支付服务
 │   └── src/main/java/org/cloudback/payment/
 │       ├── PaymentApplication.java
-│       ├── config/AlipayProperties.java          # 支付宝配置属性绑定
+│       ├── config/AlipayProperties.java          # 支付宝配置属性绑定（含 frontendUrl 前端回跳地址）
 │       ├── config/AlipayConfig.java              # AlipayClient Bean
 │       ├── controller/PaymentController.java
 │       ├── service/impl/PaymentServiceImpl.java  # 支付宝页面支付核心逻辑
@@ -171,7 +171,7 @@ Gateway 白名单外的所有请求强制携带有效 JWT，解析失败返回 4
 | `ResultCode` | 错误码枚举：SUCCESS(200)、UNAUTHORIZED(401)、FORBIDDEN(403)、PRODUCT_NOT_EXIST(2001)、STOCK_INSUFFICIENT(2002)、ORDER_NOT_EXIST(3001) 等 |
 | `BaseEntity` | 实体基类，`id`（雪花算法）、`createTime`、`updateTime`、`deleted`（逻辑删除），由 `AutoFillMetaObjectHandler` 自动填充 |
 | `BusinessException` | 业务异常，携带 `code` + `message`，由 `GlobalExceptionHandler` 统一捕获返回 `R.fail()` |
-| `GlobalExceptionHandler` | `@RestControllerAdvice`，处理 BusinessException / BindException / 兜底 Exception |
+| `GlobalExceptionHandler` | `@RestControllerAdvice`，处理 BusinessException / BindException / MethodArgumentNotValidException / 兜底 Exception |
 | `FeignExceptionHandler` | `@RestControllerAdvice` + `@ConditionalOnClass`，仅在 Feign 可用时加载，处理 Feign 调用失败（避免无 Feign 依赖的模块启动失败） |
 | `JwtUtil` | HMAC-SHA256 签发/解析/验证 JWT，token 有效期 2 小时，claims 含 userId、username、role |
 | `SystemConstants` | 所有常量：Redis Key 前缀、订单状态码、Kafka Topic 名、角色字符串 |
@@ -269,7 +269,7 @@ CORS 通过 `CorsConfig`（WebFlux `CorsWebFilter`）全局允许所有来源。
 |---|---|---|---|
 | cloud-cart | `ProductFeignClient` | cloud-product | `GET /product/detail/{id}` |
 | cloud-order | `CartFeignClient` | cloud-cart | `GET /cart/checked`、`DELETE /cart/clear` |
-| cloud-order | `ProductFeignClient` | cloud-product | `POST /products/{id}/stock/deduct`、`POST /products/{id}/stock/restore`、`GET /products/{id}`、`GET /products/seller/{sellerId}` |
+| cloud-order | `ProductFeignClient` | cloud-product | `POST /products/{id}/stock/deduct`、`POST /products/{id}/stock/restore`、`GET /products/{id}`、`GET /products/seller?sellerId=` |
 | cloud-order | `UserFeignClient` | cloud-user | `GET /users/me/addresses/{id}` |
 | cloud-user | `OrderFeignClient` | cloud-order | `GET /orders/stats` |
 | cloud-user | `ProductFeignClient` | cloud-product | `GET /products/stats` |
@@ -744,7 +744,7 @@ GET /api/admin/stats（仅 ADMIN）
 | PATCH | `/api/orders/{id}/receive` | order | 是 | 确认收货（已发货 → 已完成） |
 | GET | `/api/seller/orders` | order | 是 | 卖家查看包含自己商品的订单 |
 | PATCH | `/api/seller/orders/{id}/ship` | order | 是 | 卖家发货（已支付 → 已发货） |
-| GET | `/api/products/seller/{sellerId}` | product | 内部 | Feign 按卖家 ID 获取商品列表 |
+| GET | `/api/products/seller?sellerId=` | product | 内部 | Feign 按卖家 ID 获取商品列表（query 参数） |
 | GET | `/api/products/stats` | product | 内部 | Feign 获取商品统计（上架数） |
 | GET | `/api/orders/stats` | order | 内部 | Feign 获取订单统计（总数/总金额/待支付数） |
 | GET | `/api/admin/stats` | user | 是 | 管理员看板数据（聚合用户/商品/订单统计） |
@@ -847,6 +847,8 @@ ALIPAY_PUBLIC_KEY=<支付宝公钥单行>
 ALIPAY_GATEWAY=https://openapi-sandbox.dl.alipaydev.com/gateway.do
 ALIPAY_NOTIFY_URL=http://<IP>:8080/api/payment/notify/alipay
 ALIPAY_RETURN_URL=http://localhost:4173/payment/result
+# 前端地址（支付宝同步回跳目标，可配置避免硬编码）
+ALIPAY_FRONTEND_URL=http://localhost:4173
 ```
 
 `DotenvEnvironmentPostProcessor` 启动时自动从工作目录向上查找 `.env`（最多 5 层），解析后注入 Spring Environment。
@@ -877,6 +879,37 @@ CloudBack/.claude/
 
 - `AlipayProperties.privateKey` 使用 `@ToString.Exclude`（Lombok），防止日志泄露 RSA 私钥
 - JWT 密钥在启动时校验（长度 <32 字符或为空则立即报错而非运行时 500）
+
+---
+
+## 稳定性改进记录（2026-06）
+
+### 数据正确性
+- **分页 total 修复**：Meilisearch 搜索结果总数改用 `rawSearch` 解析 `estimatedTotalHits`，修复分页仅显示一页的 Bug
+- **购物车数量校验**：`addItem`/`updateQuantity` 增加正数/上限（999）校验
+- **下单令牌优化**：保持 get + delete 简单模式，`@Transactional` 确保令牌消费与订单创建在同一事务中
+
+### 并发安全
+- **定时任务分布式锁**：`OrderTimeoutScheduler` 使用 Redis SETNX 防止多实例重复执行
+- **卖家申请防重复**：`applySeller` 增加 `DuplicateKeyException` 捕获；`processApplication` 添加 `@Transactional` + 条件 UPDATE（`status = PENDING`）
+- **商品操作事务**：`addProduct`/`updateProduct`/`reviewProduct` 添加 `@Transactional`
+
+### NPE 防御
+- `cancelOrder`/`cancelOrderByNo`/`shipOrder`/`receiveOrder` 中的状态比较改为常量前置（`SystemConstants.XXX.equals(order.getStatus())`）
+- `applySeller` 中 `isBuyer()` 增加 `user != null` 空指针检查
+- `resetPassword` 增加密码非空和长度校验
+
+### 异常处理
+- `GlobalExceptionHandler` 新增 `MethodArgumentNotValidException` 处理器（`@Valid` + `@RequestBody` 场景）
+- 购物车 Feign 熔断错误提示区分"服务不可用"和"商品不存在"
+
+### 代码质量
+- `ProductServiceImpl` 提取 `applyProductRequest()` 复用 ProductRequest → Product 映射
+- `UserServiceImpl` 提取 `validateAddressOwnership()` 复用地址归属校验
+- `OrderServiceImpl.getSellerOrders` 批量查询 OrderItem 消除 N+1 问题
+
+### 配置化
+- `PaymentController` 中硬编码的 `localhost:4173` 改为 `AlipayProperties.frontendUrl` 配置属性
 
 ---
 

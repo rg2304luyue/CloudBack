@@ -19,4 +19,7 @@ public class AlipayProperties {
     private String gateway;
     private String notifyUrl;
     private String returnUrl;
+
+    /** 前端地址，用于支付宝同步回跳 */
+    private String frontendUrl = "http://localhost:4173";
 }

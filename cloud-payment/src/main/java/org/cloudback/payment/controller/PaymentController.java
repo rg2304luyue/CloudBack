@@ -4,6 +4,7 @@ import com.alibaba.fastjson2.JSON;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.cloudback.common.result.R;
+import org.cloudback.payment.config.AlipayProperties;
 import org.cloudback.payment.dto.CreatePaymentRequest;
 import org.cloudback.payment.model.entity.Payment;
 import org.cloudback.payment.service.PaymentService;
@@ -23,6 +24,7 @@ import java.util.Map;
 public class PaymentController {
 
     private final PaymentService paymentService;
+    private final AlipayProperties alipayProperties;
 
     /** GET /payment/{orderNo} — 纯查询支付记录（只读，不触发支付宝同步） */
     @GetMapping("/{orderNo}")
@@ -71,7 +73,7 @@ public class PaymentController {
                              HttpServletResponse response) throws Exception {
         String orderNo = request.getParameter("out_trade_no");
         if (orderNo == null || orderNo.isEmpty()) {
-            response.sendRedirect("http://localhost:4173/payment/result?error=no_order");
+            response.sendRedirect(alipayProperties.getFrontendUrl() + "/payment/result?error=no_order");
             return;
         }
 
@@ -81,15 +83,15 @@ public class PaymentController {
             paymentResult = paymentService.syncPaymentStatus(orderNo);
         } catch (Exception e) {
             log.warn("同步回跳查询支付状态异常: orderNo={}", orderNo, e);
-            response.sendRedirect("http://localhost:4173/payment/result?error=query_failed");
+            response.sendRedirect(alipayProperties.getFrontendUrl() + "/payment/result?error=query_failed");
             return;
         }
 
         if (paymentResult.getData() != null && paymentResult.getData().getStatus() == 1) {
-            response.sendRedirect("http://localhost:4173/payment/result?orderNo="
+            response.sendRedirect(alipayProperties.getFrontendUrl() + "/payment/result?orderNo="
                     + URLEncoder.encode(orderNo, StandardCharsets.UTF_8));
         } else {
-            response.sendRedirect("http://localhost:4173/payment/result?error=not_paid&orderNo="
+            response.sendRedirect(alipayProperties.getFrontendUrl() + "/payment/result?error=not_paid&orderNo="
                     + URLEncoder.encode(orderNo, StandardCharsets.UTF_8));
         }
     }

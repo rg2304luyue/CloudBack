@@ -17,9 +17,9 @@ public class AdminProductController {
 
     /** GET /admin/products/pending — 管理员分页获取待审核商品列表 */
     @GetMapping("/pending")
-    public R<List<Product>> getPendingProducts(@RequestParam(defaultValue = "1") Long page,
-                                               @RequestParam(defaultValue = "20") Long size) {
-        return productService.getPendingProducts(page, size);
+    public R<List<Product>> getPendingProducts(@RequestParam(defaultValue = "1") Integer page,
+                                               @RequestParam(defaultValue = "20") Integer size) {
+        return productService.getPendingProducts((long) page, (long) size);
     }
 
     /** PATCH /admin/products/{id}/review — 管理员审核商品（通过→上架，拒绝→下架） */

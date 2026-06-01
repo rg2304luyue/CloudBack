@@ -75,7 +75,7 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
         return chain.filter(exchange.mutate().request(request).build());
     }
 
-    /** 返回 401 未认证响应 */
+    /** 返回未认证响应（HTTP 200 + body code 401，前端根据 body.code 判断） */
     private Mono<Void> unauthorized(ServerWebExchange exchange, String message) {
         ServerHttpResponse response = exchange.getResponse();
         response.setStatusCode(HttpStatus.OK);

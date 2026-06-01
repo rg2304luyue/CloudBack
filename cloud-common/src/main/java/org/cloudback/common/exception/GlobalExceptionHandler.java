@@ -5,6 +5,7 @@ import org.cloudback.common.result.R;
 import org.cloudback.common.result.ResultCode;
 import org.springframework.http.HttpStatus;
 import org.springframework.validation.BindException;
+import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -35,6 +36,18 @@ public class GlobalExceptionHandler {
                 .map(err -> err.getDefaultMessage())
                 .orElse("参数校验失败");
         log.warn("参数校验异常: {}", message);
+        return R.fail(ResultCode.PARAM_ERROR.getCode(), message);
+    }
+
+    /** 处理 @Valid + @RequestBody JSON 校验异常 */
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public R<Void> handleMethodArgumentNotValidException(MethodArgumentNotValidException e) {
+        String message = e.getBindingResult().getAllErrors().stream()
+                .findFirst()
+                .map(err -> err.getDefaultMessage())
+                .orElse("参数校验失败");
+        log.warn("JSON参数校验异常: {}", message);
         return R.fail(ResultCode.PARAM_ERROR.getCode(), message);
     }
 

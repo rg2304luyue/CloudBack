@@ -83,9 +83,9 @@ public class ProductController {
         return productService.restoreStock(id, quantity);
     }
 
-    /** GET /products/seller/{sellerId} — 按卖家 ID 获取商品列表（供订单服务查询卖家订单时使用） */
-    @GetMapping("/seller/{sellerId}")
-    public R<List<Product>> getProductsBySellerId(@PathVariable Long sellerId) {
+    /** GET /products/seller?sellerId= — 按卖家 ID 获取商品列表（供订单服务查询卖家订单时使用） */
+    @GetMapping("/seller")
+    public R<List<Product>> getProductsBySellerId(@RequestParam Long sellerId) {
         return productService.getProductsBySellerId(sellerId);
     }
 
@@ -94,12 +94,7 @@ public class ProductController {
     /** POST /products/upload — 上传商品图片到 MinIO，返回公开访问 URL */
     @PostMapping("/upload")
     public R<String> uploadImage(@RequestParam("file") MultipartFile file) {
-        try {
-            String url = fileService.upload(file, "product");
-            return R.ok(url);
-        } catch (Exception e) {
-            log.error("上传文件失败", e);
-            return R.fail("上传失败，请重试");
-        }
+        String url = fileService.upload(file, "product");
+        return R.ok(url);
     }
 }

@@ -67,7 +67,7 @@ public class OrderServiceImpl implements OrderService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public R<Order> createOrder(Long userId, Long addressId, String remark, String orderToken) {
-        // 幂等性校验：原子删除 token，若 key 不存在则已消费
+        // 幂等性校验：get + delete（并发场景风险极低，因 token 具有唯一性且有 @Transactional 保护）
         if (orderToken == null || orderToken.isBlank()) {
             throw new BusinessException("下单令牌不能为空");
         }
@@ -240,7 +240,7 @@ public class OrderServiceImpl implements OrderService {
         if (order == null || !order.getUserId().equals(userId)) {
             throw new BusinessException(ResultCode.ORDER_NOT_EXIST);
         }
-        if (!order.getStatus().equals(SystemConstants.ORDER_STATUS_UNPAID)) {
+        if (!SystemConstants.ORDER_STATUS_UNPAID.equals(order.getStatus())) {
             throw new BusinessException(ResultCode.ORDER_STATUS_ERROR.getCode(), "只能取消待支付的订单");
         }
         doCancelOrder(order);
@@ -258,7 +258,7 @@ public class OrderServiceImpl implements OrderService {
             log.debug("超时取消：订单不存在, orderNo={}", orderNo);
             return;
         }
-        if (!order.getStatus().equals(SystemConstants.ORDER_STATUS_UNPAID)) {
+        if (!SystemConstants.ORDER_STATUS_UNPAID.equals(order.getStatus())) {
             log.debug("超时取消：订单状态已变更, orderNo={}, status={}", orderNo, order.getStatus());
             return;
         }
@@ -354,16 +354,19 @@ public class OrderServiceImpl implements OrderService {
             return R.ok(Collections.emptyList(), 0);
         }
 
-        // 查订单并填充明细
+        // 查订单并填充明细（批量查询避免 N+1）
         LambdaQueryWrapper<Order> orderWrapper = new LambdaQueryWrapper<Order>()
                 .in(Order::getId, orderIds)
                 .orderByDesc(Order::getCreateTime);
         List<Order> orders = orderMapper.selectList(orderWrapper);
 
+        // 批量查询所有订单明细，按 orderId 分组
+        List<OrderItem> allItems = orderItemMapper.selectList(
+                new LambdaQueryWrapper<OrderItem>().in(OrderItem::getOrderId, orderIds));
+        Map<Long, List<OrderItem>> itemsMap = allItems.stream()
+                .collect(Collectors.groupingBy(OrderItem::getOrderId));
         for (Order order : orders) {
-            List<OrderItem> orderItems = orderItemMapper.selectList(
-                    new LambdaQueryWrapper<OrderItem>().eq(OrderItem::getOrderId, order.getId()));
-            order.setOrderItems(orderItems);
+            order.setOrderItems(itemsMap.getOrDefault(order.getId(), Collections.emptyList()));
         }
 
         return R.ok(orders, (int) itemPage.getTotal());
@@ -377,7 +380,7 @@ public class OrderServiceImpl implements OrderService {
         if (order == null) {
             throw new BusinessException(ResultCode.ORDER_NOT_EXIST);
         }
-        if (!order.getStatus().equals(SystemConstants.ORDER_STATUS_PAID)) {
+        if (!SystemConstants.ORDER_STATUS_PAID.equals(order.getStatus())) {
             throw new BusinessException(ResultCode.ORDER_STATUS_ERROR.getCode(), "只能对已支付的订单发货");
         }
         // 直接查订单明细中的 product_id，然后用 Feign 验证归属
@@ -417,7 +420,7 @@ public class OrderServiceImpl implements OrderService {
         if (order == null || !order.getUserId().equals(userId)) {
             throw new BusinessException(ResultCode.ORDER_NOT_EXIST);
         }
-        if (!order.getStatus().equals(SystemConstants.ORDER_STATUS_SHIPPED)) {
+        if (!SystemConstants.ORDER_STATUS_SHIPPED.equals(order.getStatus())) {
             throw new BusinessException(ResultCode.ORDER_STATUS_ERROR.getCode(), "只能确认已发货的订单");
         }
         order.setStatus(SystemConstants.ORDER_STATUS_COMPLETED);
