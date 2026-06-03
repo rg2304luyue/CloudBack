@@ -14,6 +14,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.cloudback.common.constant.SystemConstants;
 import org.cloudback.common.exception.BusinessException;
 import org.cloudback.common.result.R;
+import org.cloudback.common.service.OutboxService;
 import org.cloudback.payment.config.AlipayProperties;
 import org.cloudback.payment.mapper.PaymentMapper;
 import org.cloudback.payment.model.entity.Payment;
@@ -36,6 +37,7 @@ public class PaymentServiceImpl implements PaymentService {
     private final AlipayClient alipayClient;
     private final AlipayProperties alipayProperties;
     private final KafkaTemplate<String, String> kafkaTemplate;
+    private final OutboxService outboxService;
 
     /** 根据订单号查询支付记录。若本地仍是待支付，主动向支付宝查询真实状态并同步（前端支付结果页依赖此行为）。 */
     @Override
@@ -45,9 +47,13 @@ public class PaymentServiceImpl implements PaymentService {
         if (payment == null) {
             throw new BusinessException("支付记录不存在");
         }
-        // 若本地待支付，主动同步支付宝状态
+        // 若本地待支付，主动同步支付宝状态（30秒内不重复查询，避免频率限制）
         if (payment.getStatus() == 0) {
-            return syncPaymentStatus(orderNo);
+            boolean shouldSync = payment.getLastSyncTime() == null
+                    || LocalDateTime.now().isAfter(payment.getLastSyncTime().plusSeconds(30));
+            if (shouldSync) {
+                return syncPaymentStatus(orderNo);
+            }
         }
         return R.ok(payment);
     }
@@ -64,6 +70,9 @@ public class PaymentServiceImpl implements PaymentService {
 
         if (payment.getStatus() == 0) {
             log.info("本地状态待支付，主动查询支付宝: orderNo={}", orderNo);
+            // 更新查询时间，防止频繁调用支付宝 API
+            payment.setLastSyncTime(LocalDateTime.now());
+            paymentMapper.updateById(payment);
             try {
                 AlipayTradeQueryRequest request = new AlipayTradeQueryRequest();
                 JSONObject biz = new JSONObject();
@@ -255,16 +264,11 @@ public class PaymentServiceImpl implements PaymentService {
             return;
         }
 
-        // 仅更新成功时发送 Kafka 通知
+        // 仅更新成功时通过 Outbox 可靠发送 Kafka 通知
         JSONObject resultMsg = new JSONObject();
         resultMsg.put("orderNo", orderNo);
         resultMsg.put("status", "SUCCESS");
-        kafkaTemplate.send(SystemConstants.KAFKA_TOPIC_PAYMENT_RESULT, resultMsg.toJSONString())
-                .whenComplete((result, ex) -> {
-                    if (ex != null) {
-                        log.error("Kafka 支付结果发送失败: orderNo={}", orderNo, ex);
-                    }
-                });
+        outboxService.saveMessage(SystemConstants.KAFKA_TOPIC_PAYMENT_RESULT, orderNo, resultMsg.toJSONString());
 
         log.info("支付成功已标记: orderNo={}, tradeNo={}", orderNo, tradeNo);
     }

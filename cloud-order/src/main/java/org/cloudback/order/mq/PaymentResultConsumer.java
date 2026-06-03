@@ -3,6 +3,7 @@ package org.cloudback.order.mq;
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONException;
 import com.alibaba.fastjson2.JSONObject;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -66,7 +67,14 @@ public class PaymentResultConsumer {
             if (rows > 0) {
                 log.info("订单状态已更新为已支付: orderNo={}", orderNo);
             } else {
-                log.warn("订单状态更新影响0行, 可能已被处理或状态不匹配: orderNo={}", orderNo);
+                // 检查是否支付-取消竞态：订单已被取消但支付成功
+                Order order = orderMapper.selectOne(
+                        new LambdaQueryWrapper<Order>().eq(Order::getOrderNo, orderNo));
+                if (order != null && SystemConstants.ORDER_STATUS_CANCELLED.equals(order.getStatus())) {
+                    log.error("支付-取消竞态：订单已取消但支付成功，需人工退款 orderNo={}", orderNo);
+                } else {
+                    log.warn("订单状态更新影响0行, 可能已被处理或状态不匹配: orderNo={}", orderNo);
+                }
             }
         } catch (Exception e) {
             log.error("更新订单状态失败, 消息将被重试: orderNo={}", orderNo, e);

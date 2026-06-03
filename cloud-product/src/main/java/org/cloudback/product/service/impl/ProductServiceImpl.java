@@ -24,7 +24,6 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -210,8 +209,15 @@ public class ProductServiceImpl implements ProductService {
         }
 
         productMapper.updateById(product);
-        hotProductsTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:hot");
-        productDetailTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:detail:" + id);
+        String hotKey = SystemConstants.REDIS_KEY_PREFIX + "product:hot";
+        String detailKey = SystemConstants.REDIS_KEY_PREFIX + "product:detail:" + id;
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                hotProductsTwoLevel.evict(hotKey);
+                productDetailTwoLevel.evict(detailKey);
+            }
+        });
 
         Product updatedProduct = productMapper.selectById(id);
         if (updatedProduct.getStatus() == 1) {

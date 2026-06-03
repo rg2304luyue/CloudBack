@@ -11,6 +11,8 @@ import org.cloudback.common.constant.SystemConstants;
 import org.cloudback.common.exception.BusinessException;
 import org.cloudback.common.result.R;
 import org.cloudback.common.result.ResultCode;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 
@@ -37,18 +39,17 @@ public class CartServiceImpl implements CartService {
 
     private final RedisTemplate<String, Object> redisTemplate;
     private final ProductFeignClient productFeignClient;
+    private final TwoLevelCacheService cartTwoLevel;
+    private final RedissonClient redissonClient;
     private static final long CART_TTL_DAYS = 7;
     private static final int CART_QUANTITY_MAX = 999;
-
-    private final TwoLevelCacheService cartTwoLevel;
-
 
     /** 生成购物车 Redis Key */
     private String cartKey(Long userId) {
         return SystemConstants.CART_KEY_PREFIX + userId;
     }
 
-    /** 添加商品到购物车，已存在则累加数量，通过 Feign 查询商品信息 */
+    /** 添加商品到购物车，已存在则累加数量，通过 Feign 查询商品信息（分布式锁保护并发） */
     @Override
     public R<String> addItem(Long userId, Long productId, Integer quantity) {
         if (quantity == null || quantity <= 0) {
@@ -66,32 +67,41 @@ public class CartServiceImpl implements CartService {
         String key = cartKey(userId);
         String field = String.valueOf(productId);
 
-        Object existing = redisTemplate.opsForHash().get(key, field);
-        if (existing != null) {
-            CartItem cartItem = JSON.parseObject(existing.toString(), CartItem.class);
-            cartItem.setQuantity(cartItem.getQuantity() + quantity);
-            cartItem.setChecked(true);
-            cartItem.setName(productInfo.getName());
-            cartItem.setMainImage(productInfo.getMainImage());
-            cartItem.setPrice(productInfo.getPrice());
-            redisTemplate.opsForHash().put(key, field, JSON.toJSONString(cartItem));
-        } else {
-            CartItem cartItem = new CartItem();
-            cartItem.setProductId(productId);
-            cartItem.setName(productInfo.getName());
-            cartItem.setMainImage(productInfo.getMainImage());
-            cartItem.setPrice(productInfo.getPrice());
-            cartItem.setQuantity(quantity);
-            cartItem.setChecked(true);
-            redisTemplate.opsForHash().put(key, field, JSON.toJSONString(cartItem));
-        }
+        RLock lock = redissonClient.getLock(key + ":lock");
+        try {
+            lock.lock(5, TimeUnit.SECONDS);
 
-        redisTemplate.expire(key, CART_TTL_DAYS, TimeUnit.DAYS);
-        evictCartCache(userId);
+            Object existing = redisTemplate.opsForHash().get(key, field);
+            if (existing != null) {
+                CartItem cartItem = JSON.parseObject(existing.toString(), CartItem.class);
+                cartItem.setQuantity(cartItem.getQuantity() + quantity);
+                cartItem.setChecked(true);
+                cartItem.setName(productInfo.getName());
+                cartItem.setMainImage(productInfo.getMainImage());
+                cartItem.setPrice(productInfo.getPrice());
+                redisTemplate.opsForHash().put(key, field, JSON.toJSONString(cartItem));
+            } else {
+                CartItem cartItem = new CartItem();
+                cartItem.setProductId(productId);
+                cartItem.setName(productInfo.getName());
+                cartItem.setMainImage(productInfo.getMainImage());
+                cartItem.setPrice(productInfo.getPrice());
+                cartItem.setQuantity(quantity);
+                cartItem.setChecked(true);
+                redisTemplate.opsForHash().put(key, field, JSON.toJSONString(cartItem));
+            }
+
+            redisTemplate.expire(key, CART_TTL_DAYS, TimeUnit.DAYS);
+            evictCartCache(userId);
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
+        }
         return R.ok("添加购物车成功");
     }
 
-    /** 更新商品数量 */
+    /** 更新商品数量（分布式锁保护并发） */
     @Override
     public R<String> updateQuantity(Long userId, Long productId, Integer quantity) {
         if (quantity == null || quantity <= 0) {
@@ -104,16 +114,25 @@ public class CartServiceImpl implements CartService {
         String key = cartKey(userId);
         String field = String.valueOf(productId);
 
-        Object existing = redisTemplate.opsForHash().get(key, field);
-        if (existing == null) {
-            throw new BusinessException("购物车中不存在该商品");
-        }
+        RLock lock = redissonClient.getLock(key + ":lock");
+        try {
+            lock.lock(5, TimeUnit.SECONDS);
 
-        CartItem cartItem = JSON.parseObject(existing.toString(), CartItem.class);
-        cartItem.setQuantity(quantity);
-        redisTemplate.opsForHash().put(key, field, JSON.toJSONString(cartItem));
-        redisTemplate.expire(key, CART_TTL_DAYS, TimeUnit.DAYS);
-        evictCartCache(userId);
+            Object existing = redisTemplate.opsForHash().get(key, field);
+            if (existing == null) {
+                throw new BusinessException("购物车中不存在该商品");
+            }
+
+            CartItem cartItem = JSON.parseObject(existing.toString(), CartItem.class);
+            cartItem.setQuantity(quantity);
+            redisTemplate.opsForHash().put(key, field, JSON.toJSONString(cartItem));
+            redisTemplate.expire(key, CART_TTL_DAYS, TimeUnit.DAYS);
+            evictCartCache(userId);
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
+        }
         return R.ok("更新数量成功");
     }
 
@@ -125,21 +144,30 @@ public class CartServiceImpl implements CartService {
         return R.ok("移除成功");
     }
 
-    /** 勾选/取消勾选商品 */
+    /** 勾选/取消勾选商品（分布式锁保护并发） */
     @Override
     public R<String> checkItem(Long userId, Long productId, Boolean checked) {
         String key = cartKey(userId);
         String field = String.valueOf(productId);
 
-        Object existing = redisTemplate.opsForHash().get(key, field);
-        if (existing == null) {
-            throw new BusinessException("购物车中不存在该商品");
-        }
+        RLock lock = redissonClient.getLock(key + ":lock");
+        try {
+            lock.lock(5, TimeUnit.SECONDS);
 
-        CartItem cartItem = JSON.parseObject(existing.toString(), CartItem.class);
-        cartItem.setChecked(checked);
-        redisTemplate.opsForHash().put(key, field, JSON.toJSONString(cartItem));
-        evictCartCache(userId);
+            Object existing = redisTemplate.opsForHash().get(key, field);
+            if (existing == null) {
+                throw new BusinessException("购物车中不存在该商品");
+            }
+
+            CartItem cartItem = JSON.parseObject(existing.toString(), CartItem.class);
+            cartItem.setChecked(checked);
+            redisTemplate.opsForHash().put(key, field, JSON.toJSONString(cartItem));
+            evictCartCache(userId);
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
+        }
         return R.ok(checked ? "已勾选" : "已取消勾选");
     }
 

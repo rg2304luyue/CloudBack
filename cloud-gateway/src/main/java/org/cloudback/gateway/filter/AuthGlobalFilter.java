@@ -16,8 +16,12 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 全局 JWT 认证过滤器，拦截所有请求。
@@ -30,6 +34,8 @@ import java.util.List;
 @Slf4j
 @Component
 public class AuthGlobalFilter implements GlobalFilter, Ordered {
+
+    private static final ObjectMapper objectMapper = new ObjectMapper();
 
     /** JWT 认证白名单 */
     private static final List<String> WHITE_URLS = List.of(
@@ -80,8 +86,17 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
         ServerHttpResponse response = exchange.getResponse();
         response.setStatusCode(HttpStatus.OK);
         response.getHeaders().setContentType(MediaType.APPLICATION_JSON);
-        String body = "{\"code\":401,\"message\":\"" + message + "\",\"data\":null}";
-        DataBuffer buffer = response.bufferFactory().wrap(body.getBytes(StandardCharsets.UTF_8));
+        Map<String, Object> bodyMap = new LinkedHashMap<>();
+        bodyMap.put("code", 401);
+        bodyMap.put("message", message);
+        bodyMap.put("data", null);
+        byte[] bodyBytes;
+        try {
+            bodyBytes = objectMapper.writeValueAsBytes(bodyMap);
+        } catch (Exception e) {
+            bodyBytes = "{\"code\":401,\"message\":\"认证失败\"}".getBytes(StandardCharsets.UTF_8);
+        }
+        DataBuffer buffer = response.bufferFactory().wrap(bodyBytes);
         return response.writeWith(Mono.just(buffer));
     }
 

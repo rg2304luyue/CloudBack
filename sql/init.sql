@@ -148,6 +148,24 @@ ALTER TABLE cloud_mall.`user` ADD COLUMN `role` VARCHAR(20) NOT NULL DEFAULT 'BU
 ALTER TABLE cloud_mall.`product` ADD COLUMN `seller_id` BIGINT DEFAULT NULL COMMENT '卖家用户ID';
 CREATE INDEX idx_seller_id ON cloud_mall.`product` (`seller_id`);
 
+-- ==================== 消息发件箱表 ====================
+CREATE TABLE IF NOT EXISTS `outbox_message` (
+    `id`            BIGINT       NOT NULL COMMENT '主键',
+    `topic`         VARCHAR(100) NOT NULL COMMENT 'Kafka Topic',
+    `message_key`   VARCHAR(100) DEFAULT NULL COMMENT '消息Key',
+    `payload`       TEXT         NOT NULL COMMENT '消息体 JSON',
+    `status`        TINYINT      DEFAULT 0 COMMENT '0-待发送 1-已发送 2-失败',
+    `retry_count`   INT          DEFAULT 0 COMMENT '已重试次数',
+    `max_retries`   INT          DEFAULT 5 COMMENT '最大重试次数',
+    `next_retry_at` DATETIME     DEFAULT NULL COMMENT '下次重试时间',
+    `create_time`   DATETIME     DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `update_time`   DATETIME     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (`id`),
+    KEY `idx_status_retry` (`status`, `next_retry_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='消息发件箱表';
+
+ALTER TABLE cloud_mall.`payment` ADD COLUMN `last_sync_time` DATETIME DEFAULT NULL COMMENT '上次同步支付宝时间';
+
 -- ALTER 兼容已创建的表，新环境执行下面的 CREATE
 -- CREATE TABLE IF NOT EXISTS `seller_application` (
 --     `id`            BIGINT       NOT NULL COMMENT '主键',

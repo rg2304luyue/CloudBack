@@ -44,10 +44,11 @@ CloudBack/
 │       │                       # CaffeineConfig、TwoLevelCacheService、CommonAutoConfiguration
 │       │                       # AutoFillMetaObjectHandler、DotenvEnvironmentPostProcessor
 │       │                       # MeilisearchConfig（Meilisearch 客户端 Bean）
-│       ├── service/            # FileService（MinIO 文件上传，@ConditionalOnBean）
-│       ├── constant/           # SystemConstants（Token前缀、Redis Key、订单状态等）
+│       ├── service/            # FileService（MinIO 文件上传）、OutboxService（消息发件箱可靠投递）
+│       ├── constant/           # SystemConstants（final class，Token前缀、Redis Key、订单状态等）
 │       ├── utils/              # JwtUtil（签发/解析/验证 JWT）
-│       └── mapper/             # UserMapper（共享 User 的 MyBatis-Plus 映射）
+│       └── mapper/             # UserMapper、OutboxMessageMapper（共享 MyBatis-Plus 映射）
+| `OutboxService` | 消息发件箱服务，saveMessage() 持久化 + pollAndSend() 轮询，由 cloud-order/cloud-payment 显式 Bean 声明 |
 │
 ├── cloud-gateway/  :8080       # API 网关
 │   └── src/main/java/org/cloudback/gateway/
@@ -99,7 +100,8 @@ CloudBack/
 │       │   └── SellerOrderController.java        # 卖家订单：查询/发货
 │       ├── service/impl/OrderServiceImpl.java    # 核心下单编排
 │       ├── scheduler/OrderTimeoutScheduler.java  # 定时扫描超时订单自动取消
-│       ├── mq/PaymentResultConsumer.java         # Kafka 支付结果消费者
+│       ├── scheduler/OutboxScheduler.java        # Outbox 消息定时发送
+│       ├── mq/PaymentResultConsumer.java         # Kafka 支付结果消费者（含支付-取消竞态检测）
 │       ├── feign/              # CartFeignClient、ProductFeignClient、UserFeignClient
 │       │                       # CartItemDTO、ProductDTO
 │       ├── config/FeignRequestInterceptor.java   # 用户上下文透传
@@ -111,9 +113,11 @@ CloudBack/
 │       ├── PaymentApplication.java
 │       ├── config/AlipayProperties.java          # 支付宝配置属性绑定（含 frontendUrl 前端回跳地址）
 │       ├── config/AlipayConfig.java              # AlipayClient Bean
+│       ├── config/OutboxConfig.java            # OutboxService Bean 声明
 │       ├── controller/PaymentController.java
 │       ├── service/impl/PaymentServiceImpl.java  # 支付宝页面支付核心逻辑
 │       ├── mq/OrderCreateConsumer.java           # Kafka 订单创建消费者
+│       ├── scheduler/OutboxScheduler.java        # Outbox 消息定时发送
 │       ├── model/entity/Payment.java
 │       └── mapper/PaymentMapper.java
 │
@@ -172,7 +176,8 @@ Gateway 白名单外的所有请求强制携带有效 JWT，解析失败返回 4
 | `BaseEntity` | 实体基类，`id`（雪花算法）、`createTime`、`updateTime`、`deleted`（逻辑删除），由 `AutoFillMetaObjectHandler` 自动填充 |
 | `BusinessException` | 业务异常，携带 `code` + `message`，由 `GlobalExceptionHandler` 统一捕获返回 `R.fail()` |
 | `GlobalExceptionHandler` | `@RestControllerAdvice`，处理 BusinessException / BindException / MethodArgumentNotValidException / 兜底 Exception |
-| `FeignExceptionHandler` | `@RestControllerAdvice` + `@ConditionalOnClass`，仅在 Feign 可用时加载，处理 Feign 调用失败（避免无 Feign 依赖的模块启动失败） |
+| `OutboxMessage` | 消息发件箱实体，映射 outbox_message 表 |，处理 Feign 调用失败（避免无 Feign 依赖的模块启动失败） |
+| `OutboxService` | 消息发件箱服务，saveMessage() 持久化 + pollAndSend() 轮询，由 cloud-order/cloud-payment 显式 Bean 声明 |
 | `JwtUtil` | HMAC-SHA256 签发/解析/验证 JWT，token 有效期 2 小时，claims 含 userId、username、role |
 | `SystemConstants` | 所有常量：Redis Key 前缀、订单状态码、Kafka Topic 名、角色字符串 |
 | `User` | 共享 User 实体（auth 和 user 服务共用），字段：username、password(BCrypt)、role、status |
@@ -189,7 +194,7 @@ Gateway 白名单外的所有请求强制携带有效 JWT，解析失败返回 4
 | `DotenvEnvironmentPostProcessor` | Spring 启动前加载 `.env` 文件到 Environment，支持 `${VAR}` 引用 |
 | `MinioConfig` | 创建 `MinioClient` Bean，自动初始化 Bucket 并设置公开读策略；`@ConditionalOnProperty` 确保只在配置了 `minio.endpoint` 的模块中加载 |
 | `CaffeineConfig` | 创建 4 个 Caffeine Cache 实例（商品详情/热门/ID列表/购物车），并组装对应的 `TwoLevelCacheService` Bean；`@ConditionalOnClass(RedisTemplate.class)` 确保 gateway/auth 等无 Redis 依赖的模块自动跳过 |
-| `TwoLevelCacheService` | 通用二级缓存服务：L1(Caffeine 本地 30s)→L2(Redis 分布式 5min)→DB，提供 `get()` 穿透读取和 `evict()` 双删（先 Redis 后 Caffeine）|
+| `TwoLevelCacheService` | 通用二级缓存服务：L1(Caffeine 30s)→L2(Redis)→DB，Redis 故障自动降级 |，提供 `get()` 穿透读取和 `evict()` 双删（先 Redis 后 Caffeine）|
 | `CommonAutoConfiguration` | `@ComponentScan("org.cloudback.common")`，使 `FileService` 等 `@Service` 组件能被所有依赖 cloud-common 的模块自动发现 |
 | `FileService` | MinIO 文件上传服务，封装 `putObject` 逻辑，按 prefix 分目录存储（avatar/product），`@ConditionalOnBean(MinioClient.class)` 确保仅在配置了 MinIO 的模块中加载 |
 | `MeilisearchConfig` | 创建 `com.meilisearch.sdk.Client` Bean；`@ConditionalOnProperty(prefix = "meili", name = "host")` 确保仅在配置了 Meilisearch 的模块中加载 |
@@ -380,17 +385,18 @@ GET /api/products/suggest?keyword=
 
 添加商品 POST /api/cart/items (JSON body: {productId, quantity})
   1. Feign → ProductService.getProductDetail(productId) 获取商品名/图/价
-  2. 从 Redis Hash 检查是否已有该 productId
+  2. Redisson RLock 加锁（cloud:cart:{userId}:lock, TTL 5s）
+  3. 从 Redis Hash 检查是否已有该 productId
      → 已有：累加 quantity，更新 name/image/price（保证最新）
      → 没有：创建新 CartItem，checked 默认 true
-  3. HSET + EXPIRE 续期 7 天
-  4. evict 读缓存（两个 key）
+  4. HSET + EXPIRE 续期 7 天
+  5. 解锁 + evict 读缓存（两个 key）
 
 更新数量 PATCH /api/cart/items/{productId} (JSON body: {quantity})
-  → HGET → 修改 quantity → HSET → evict 读缓存
+  → Redisson RLock → HGET → 修改 quantity → HSET → 解锁 → evict 读缓存
 
 勾选 PATCH /api/cart/items/{productId}/check (JSON body: {checked})
-  → HGET → 修改 checked → HSET → evict 读缓存
+  → Redisson RLock → HGET → 修改 checked → HSET → 解锁 → evict 读缓存
 
 获取购物车 GET /api/cart/list
   → L1 → L2 → HGETALL → 回填 L1+L2
@@ -406,9 +412,9 @@ GET /api/products/suggest?keyword=
 ```text
 POST /api/orders (JSON body: { addressId, remark, orderToken })
 
-Step 0: 幂等校验
-  - 验证 orderToken：从 Redis GET 对应 token，比对值是否匹配
-  - 匹配成功 → 立即 DELETE token（一次性使用）
+Step 0: 幂等校验（Lua 脚本原子 GET + DELETE）
+  - 验证 orderToken：Lua 脚本原子 get-and-delete order token
+  - 匹配成功 → token 已在脚本中删除（一次性使用，无并发窗口）
   - 不匹配或已过期 → BusinessException "请勿重复提交订单"
 
 Step 1: Feign → CartFeignClient.getCheckedItems(userId)
@@ -431,22 +437,23 @@ Step 4: Feign → ProductFeignClient.deductStock() × N（先扣库存）
     WHERE id = ? AND stock >= ?（WHERE 条件防超卖）
   - 任一失败 → 返回 BusinessException，事务中止
 
-Step 5: saveOrderAndItems（写订单 + 明细 → 事务提交后再执行非 DB 副作用）
+Step 5: saveOrderAndItems（写订单 + 明细 + Outbox 消息，同一事务）
   - INSERT order_info（orderMapper.insert）
   - INSERT order_item × N（orderItemMapper.insert），每条保存商品名称/图片/价格快照
+  - INSERT outbox_message（topic="order-create"），与订单在同一事务，保证消息不丢
   - 事务提交后（TransactionSynchronization.afterCommit）：
-    - Feign → CartFeignClient.clearCart(userId) 清空购物车
+    - Feign → CartFeignClient.clearCart(userId) 清空购物车（异常不阻断）
     - Redis: 将 orderNo → 超时时间戳存入 ZSet，供定时任务扫描
-    - Kafka.send("order-create", { orderNo, userId, totalAmount })
+  - OutboxScheduler（每 5 秒）扫描 outbox_message → 发送 Kafka → 标记已发送/重试
 
 Step 6（Step 4-5 中任一步失败）: 回滚已扣库存
   - 逐项调用 ProductFeignClient.restoreStock(productId, quantity)
-  - 确保分布式场景下的数据最终一致性
+  - restoreStock 失败时写入 Outbox（topic="stock-restore"）兜底重试
 
 Step 7: 返回 Order 实体
 ```
 
-**关键设计**：`createOrder` 全程 `@Transactional`，确保订单和明细写入的原子性；先扣库存再写订单（防止超卖）；非 DB 副作用（清购物车/Kafka/Redis）通过 `TransactionSynchronization.afterCommit` 延迟到事务提交后执行；下单幂等 Token 防止重复提交；库存扣减失败时主动回滚已扣库存。
+**关键设计**：`createOrder` 全程 `@Transactional`，确保订单、明细、Outbox 消息写入的原子性；先扣库存再写订单（防止超卖）；非 DB 副作用（清购物车/Redis）通过 `TransactionSynchronization.afterCommit` 延迟到事务提交后执行；下单幂等 Token 使用 Lua 脚本原子 GET+DELETE 防止重复提交；Kafka 消息通过 Outbox 模式保证可靠投递（消息先写 DB，调度器异步发送，失败指数退避重试）；库存扣减失败时主动回滚，回滚失败写入 Outbox 兜底。
 
 ### 6. 支付（支付宝沙箱页面支付）
 
@@ -475,7 +482,7 @@ Step 7: 返回 Order 实体
     GET /api/payment/return/alipay?out_trade_no=xxx&trade_no=xxx&...
     → 提取 orderNo → syncPaymentStatus()（主动向支付宝查询最新状态并同步）
       → 返回 TRADE_SUCCESS → 更新 payment.status=1, tradeNo, payTime
-      → 发送 Kafka "payment-result" → 302 跳转前端支付结果页
+      → 写入 Outbox "payment-result" → 302 跳转前端支付结果页
 
   异步通知（服务端，需公网可达）:
     POST /api/payment/notify/alipay
@@ -490,8 +497,10 @@ cloud-order 消费 payment-result:
   3. 反序列化失败的消息直接丢弃（无效格式），DB 异常抛出触发 Kafka 重试
 
 查询支付记录 GET /api/payment/{orderNo}:
-  若本地记录仍为待支付 → 自动调用 syncPaymentStatus() 同步支付宝状态
+  若本地记录仍为待支付 → 30秒内只查一次支付宝 API（防频率限制）
   → 前端支付结果页依赖此行为轮询确认支付结果
+
+**支付-取消竞态保护**：PaymentResultConsumer 在条件 UPDATE 返回 0 行时，检测订单是否已被取消。若已取消则 log.error 告警（需人工处理退款），避免用户付费后订单仍被取消。标记支付成功时通过 Outbox 可靠发送 Kafka 通知。
 ```
 
 **支付宝配置**：沙箱网关 `openapi-sandbox.dl.alipaydev.com`，RSA2 签名，公钥模式。密钥通过 `.env` 注入，单行 PKCS8 格式。应用私钥和支付宝公钥均不含 `----BEGIN/END----` 标记。
@@ -782,9 +791,10 @@ order_info ──< payment
 | `seller_application` | id, user_id, status(PENDING/APPROVED/REJECTED) | idx_user_id |
 | `order_info` | id, order_no(UK), user_id, total_amount, status(0-4), receiver_* | uk_order_no, idx_user_id, idx_status |
 | `order_item` | id, order_id, order_no, product_id, product_name, price, quantity, total_amount | idx_order_id, idx_order_no |
-| `payment` | id, order_no, user_id, amount, pay_method, trade_no, status | idx_order_no, idx_user_id |
+| `payment` | id, order_no, user_id, amount, pay_method, trade_no, status, last_sync_time | idx_order_no, idx_user_id |
+| `outbox_message` | id, topic, message_key, payload, status(0/1/2), retry_count, max_retries, next_retry_at | idx_status_retry |
 
-所有表包含 `create_time` / `update_time` / `deleted`（逻辑删除），id 为雪花算法 BIGINT。
+所有表包含 `create_time` / `update_time`（outbox_message 无逻辑删除），id 为雪花算法 BIGINT。`payment.last_sync_time` 记录上次主动查询支付宝的时间，用于频率限制（30 秒内不重复查询）。
 
 ### 订单状态流转
 
@@ -817,6 +827,12 @@ order_info ──< payment
 | `cloud:cart:cache:checked:{userId}` | String | 已勾选商品 L2 缓存，TTL 5 分钟 |
 | `cloud:browse:history:{userId}` | List | 用户浏览历史，productId 字符串，最多 50 条，最新在左 |
 | `cloud:token:blacklist:{tokenId}` | String | Token 黑名单（预留，当前未使用） |
+| `cloud:order:token:{userId}` | String | 下单幂等 Token，UUID，TTL 30min，Lua 原子 GET+DELETE 消费 |
+| `cloud:order:timeout` | ZSet | 超时订单追踪，score=过期时间戳，OrderTimeoutScheduler 每秒扫描 |
+| `cloud:order:timeout:lock` | String | 超时扫描分布式锁（SETNX 5s），防止多实例重复执行 |
+| `cloud:outbox:order:lock` | String | cloud-order Outbox 发送锁（SETNX 10s） |
+
+**购物车并发保护**：`addItem`/`updateQuantity`/`checkItem` 使用 Redisson `RLock`（key: `cloud:cart:{userId}:lock`，TTL 5s），防止同一用户并发请求导致数据覆盖。
 
 ---
 
@@ -910,6 +926,32 @@ CloudBack/.claude/
 
 ### 配置化
 - `PaymentController` 中硬编码的 `localhost:4173` 改为 `AlipayProperties.frontendUrl` 配置属性
+
+### 2026-06-03 架构增强
+
+**并发安全**
+- 购物车 `addItem`/`updateQuantity`/`checkItem` 使用 Redisson `RLock` 分布式锁，防止并发读写覆盖
+- 下单幂等 Token 改用 Lua 脚本原子 GET+DELETE，消除 GET 与 DELETE 之间的并发窗口
+
+**消息可靠性**
+- 引入 Outbox 模式：订单创建和支付结果通知不再直接发送 Kafka，改为先写 `outbox_message` 表（与业务在同一事务），由 `OutboxScheduler` 每 5 秒扫描发送，失败指数退避重试（2^n 秒，最多 5 次）
+- 库存回滚失败时写入 Outbox 兜底，避免因网络瞬断导致库存永久丢失
+
+**缓存健壮性**
+- `TwoLevelCacheService` Redis 读/写/删操作包裹 try-catch，Redis 故障时自动降级到 Caffeine → DB 路径
+- `ProductServiceImpl.updateProduct` 缓存驱逐改为 `afterCommit` 回调，与 `deductStock`/`restoreStock` 保持一致，避免事务回滚后缓存误删
+
+**支付安全**
+- `PaymentResultConsumer` 增加支付-取消竞态检测：若支付成功但订单已取消，记录 error 告警（需人工退款）
+- `getPaymentByOrderNo` 加 30 秒间隔限制，防止用户频繁刷新触发支付宝 API 限流
+- `Payment.lastSyncTime` 字段记录上次查询时间
+
+**Gateway 安全**
+- `AuthGlobalFilter` 认证失败响应改用 `ObjectMapper` 生成 JSON，防止手动拼接导致的 JSON 注入风险
+
+**代码质量**
+- `SystemConstants` 从 `interface` 改为 `final class`（常量接口反模式修复）
+- 前端订单状态 CSS（.status-0~4）从 3 个页面提取到 `global.css`，消除重复
 
 ---
 

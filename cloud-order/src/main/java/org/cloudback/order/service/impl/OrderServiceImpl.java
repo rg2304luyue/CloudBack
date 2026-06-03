@@ -2,6 +2,7 @@ package org.cloudback.order.service.impl;
 
 import cn.hutool.core.util.IdUtil;
 import com.alibaba.fastjson2.JSON;
+import com.alibaba.fastjson2.JSONObject;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
@@ -10,6 +11,7 @@ import org.cloudback.common.constant.SystemConstants;
 import org.cloudback.common.exception.BusinessException;
 import org.cloudback.common.result.R;
 import org.cloudback.common.result.ResultCode;
+import org.cloudback.common.service.OutboxService;
 import org.cloudback.order.feign.CartFeignClient;
 import org.cloudback.order.feign.CartItemDTO;
 import org.cloudback.order.feign.ProductDTO;
@@ -38,6 +40,7 @@ import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 
 /**
  * 订单服务实现，处理下单全流程。
@@ -62,24 +65,28 @@ public class OrderServiceImpl implements OrderService {
     private final UserFeignClient userFeignClient;
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final RedisTemplate<String, Object> redisTemplate;
+    private final OutboxService outboxService;
 
     /** 创建订单：幂等Token校验 → 查购物车勾选商品 → 计算金额 → 查地址 → 逐个扣库存 → 写库 → 清购物车 → Kafka通知支付 → Redis ZSet超时；任一步骤失败回滚已扣库存 */
     @Override
     @Transactional(rollbackFor = Exception.class)
     public R<Order> createOrder(Long userId, Long addressId, String remark, String orderToken) {
-        // 幂等性校验：get + delete（并发场景风险极低，因 token 具有唯一性且有 @Transactional 保护）
+        // 幂等性校验：原子 get-and-delete（Lua 脚本保证原子性）
         if (orderToken == null || orderToken.isBlank()) {
             throw new BusinessException("下单令牌不能为空");
         }
         String tokenKey = "cloud:order:token:" + userId;
-        String storedToken = (String) redisTemplate.opsForValue().get(tokenKey);
+        DefaultRedisScript<String> script = new DefaultRedisScript<>(
+                "local v = redis.call('GET', KEYS[1]) " +
+                "if v then redis.call('DEL', KEYS[1]) end return v", String.class);
+        String storedToken = redisTemplate.execute(script, Collections.singletonList(tokenKey));
         if (storedToken == null) {
             throw new BusinessException("请勿重复提交订单");
         }
         if (!storedToken.equals(orderToken)) {
             throw new BusinessException("下单令牌无效");
         }
-        redisTemplate.delete(tokenKey);
+        // token 已在 Lua 脚本中原子删除，无需再次 delete
 
         // 检查购物车服务是否正常
         R<List<CartItemDTO>> cartResult = cartFeignClient.getCheckedItems(userId);
@@ -162,34 +169,33 @@ public class OrderServiceImpl implements OrderService {
                 deductedItems.add(item);
             }
 
-            // 库存扣减成功后写入订单和明细
+            // 库存扣减成功后写入订单和明细，同时写入 Outbox 消息（与订单在同一事务）
             saveOrderAndItems(order, orderItems);
 
-            // final 副本供 TransactionSynchronization 内部类使用
-            final BigDecimal finalAmount = totalAmount;
-            final String finalOrderNo = orderNo;
+            // Kafka 消息改用 Outbox 可靠投递：写入 outbox_message 表，由调度器异步发送
+            Map<String, Object> kafkaMsg = new HashMap<>();
+            kafkaMsg.put("orderId", order.getId());
+            kafkaMsg.put("orderNo", orderNo);
+            kafkaMsg.put("userId", userId);
+            kafkaMsg.put("totalAmount", totalAmount);
+            kafkaMsg.put("createTime", Objects.toString(order.getCreateTime(), ""));
+            outboxService.saveMessage(SystemConstants.KAFKA_TOPIC_ORDER_CREATE, orderNo, JSON.toJSONString(kafkaMsg));
 
             // 事务提交后再执行非 DB 副作用
+            final Long cartUserId = userId;
+            final String timeoutKey = "cloud:order:timeout";
+            final long expireTime = System.currentTimeMillis() + ORDER_TIMEOUT_MINUTES * 60 * 1000;
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override
                 public void afterCommit() {
                     // 清空购物车
-                    cartFeignClient.clearCart(userId);
-
-                    // Kafka 通知支付服务
-                    Map<String, Object> kafkaMsg = new HashMap<>();
-                    kafkaMsg.put("orderId", order.getId());
-                    kafkaMsg.put("orderNo", finalOrderNo);
-                    kafkaMsg.put("userId", userId);
-                    kafkaMsg.put("totalAmount", finalAmount);
-                    kafkaMsg.put("createTime", Objects.toString(order.getCreateTime(), ""));
-                    kafkaTemplate.send(SystemConstants.KAFKA_TOPIC_ORDER_CREATE, JSON.toJSONString(kafkaMsg));
-                    log.info("Kafka 消息已发送: orderNo={}", finalOrderNo);
-
+                    try {
+                        cartFeignClient.clearCart(cartUserId);
+                    } catch (Exception e) {
+                        log.error("清空购物车失败: userId={}", cartUserId, e);
+                    }
                     // 写入 ZSet 用于超时自动取消
-                    String timeoutKey = "cloud:order:timeout";
-                    long expireTime = System.currentTimeMillis() + ORDER_TIMEOUT_MINUTES * 60 * 1000;
-                    redisTemplate.opsForZSet().add(timeoutKey, finalOrderNo, expireTime);
+                    redisTemplate.opsForZSet().add(timeoutKey, orderNo, expireTime);
                 }
             });
 
@@ -201,7 +207,14 @@ public class OrderServiceImpl implements OrderService {
                 try {
                     productFeignClient.restoreStock(item.getProductId(), item.getQuantity());
                 } catch (Exception ex) {
-                    log.error("回滚库存失败: productId={}", item.getProductId(), ex);
+                    log.error("回滚库存失败，写入 Outbox 兜底重试: productId={}", item.getProductId(), ex);
+                    // 写入 outbox 兜底：后台调度器重试恢复库存
+                    JSONObject restoreMsg = new JSONObject();
+                    restoreMsg.put("productId", item.getProductId());
+                    restoreMsg.put("quantity", item.getQuantity());
+                    outboxService.saveMessage("stock-restore",
+                            String.valueOf(item.getProductId()),
+                            restoreMsg.toJSONString());
                 }
             }
             throw e instanceof BusinessException ? (BusinessException) e : new BusinessException(e.getMessage());

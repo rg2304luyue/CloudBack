@@ -1,5 +1,6 @@
 package org.cloudback.order;
 
+import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.cloud.client.discovery.EnableDiscoveryClient;
@@ -13,6 +14,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
  * @author CloudBack
  * @since 2025-05-17
  */
+@MapperScan({"org.cloudback.order.mapper", "org.cloudback.common.mapper"})
 @EnableScheduling
 @EnableFeignClients(basePackages = "org.cloudback.order.feign")
 @EnableDiscoveryClient

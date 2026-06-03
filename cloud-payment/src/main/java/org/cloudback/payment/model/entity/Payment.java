@@ -33,4 +33,6 @@ public class Payment extends BaseEntity {
     private String tradeNo;
     /** 实际支付时间 */
     private LocalDateTime payTime;
+    /** 上次同步支付宝状态时间（限制查询频率） */
+    private LocalDateTime lastSyncTime;
 }
