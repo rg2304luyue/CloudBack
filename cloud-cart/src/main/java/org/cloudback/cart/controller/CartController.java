@@ -3,6 +3,7 @@ package org.cloudback.cart.controller;
 import lombok.RequiredArgsConstructor;
 import org.cloudback.cart.dto.AddCartItemRequest;
 import org.cloudback.cart.dto.CartItem;
+import org.cloudback.cart.dto.CheckAllCartItemsRequest;
 import org.cloudback.cart.dto.CheckCartItemRequest;
 import org.cloudback.cart.dto.UpdateCartQuantityRequest;
 import org.cloudback.cart.service.CartService;
@@ -45,6 +46,13 @@ public class CartController {
                                @PathVariable Long productId,
                                @RequestBody CheckCartItemRequest request) {
         return cartService.checkItem(userId, productId, request.checked());
+    }
+
+    /** 批量勾选/取消勾选所有商品 */
+    @PatchMapping("/items/check-all")
+    public R<String> checkAllItems(@RequestHeader("X-User-Id") Long userId,
+                                   @RequestBody CheckAllCartItemsRequest request) {
+        return cartService.checkAllItems(userId, request.checked());
     }
 
     /** 删除单个商品 */

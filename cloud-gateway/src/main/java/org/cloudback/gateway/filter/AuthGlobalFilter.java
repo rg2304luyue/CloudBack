@@ -43,7 +43,12 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
             "/auth/register",
             "/auth/health",
             "/payment/notify/alipay",
-            "/payment/return/alipay"
+            "/payment/return/alipay",
+            "/products",           // 商品列表
+            "/products/hot",       // 热门商品
+            "/products/search",    // 商品搜索
+            "/products/suggest",   // 搜索建议
+            "/categories"          // 分类列表
     );
 
     /** 过滤逻辑：白名单放行，其余校验 JWT 并注入用户信息 */

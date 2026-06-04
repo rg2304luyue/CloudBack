@@ -237,8 +237,8 @@ Gateway 白名单外的所有请求强制携带有效 JWT，解析失败返回 4
 **AuthGlobalFilter**（`order = -100`，最高优先级）：
 
 ```text
-1. 检查路径是否在白名单（/auth/login、/auth/register）
-   → 白名单：直接放行
+1. 检查路径是否在白名单（/auth/login、/auth/register、/products、/products/hot、/products/search、/products/suggest、/categories）
+   → 白名单：直接放行（无需登录即可浏览商品）
 2. 提取 Authorization: Bearer <token> 头
    → 缺失或格式不正确：返回 401 JSON
 3. JwtUtil.parseToken(token) 解析
@@ -397,6 +397,9 @@ GET /api/products/suggest?keyword=
 
 勾选 PATCH /api/cart/items/{productId}/check (JSON body: {checked})
   → Redisson RLock → HGET → 修改 checked → HSET → 解锁 → evict 读缓存
+
+全选/取消全选 PATCH /api/cart/items/check-all (JSON body: {checked})
+  → Redisson RLock → HGETALL → 遍历所有商品修改 checked → 批量 HSET → 解锁 → evict 读缓存
 
 获取购物车 GET /api/cart/list
   → L1 → L2 → HGETALL → 回填 L1+L2
@@ -743,6 +746,7 @@ GET /api/admin/stats（仅 ADMIN）
 | POST | `/api/cart/items` | cart | 是 | 加入购物车（JSON body: productId, quantity） |
 | PATCH | `/api/cart/items/{productId}` | cart | 是 | 修改数量（JSON body: quantity） |
 | PATCH | `/api/cart/items/{productId}/check` | cart | 是 | 勾选/取消（JSON body: checked） |
+| PATCH | `/api/cart/items/check-all` | cart | 是 | 全选/取消全选（JSON body: checked） |
 | DELETE | `/api/cart/items/{productId}` | cart | 是 | 删除单项 |
 | DELETE | `/api/cart/items` | cart | 是 | 清空购物车 |
 | GET | `/api/orders/token` | order | 是 | 获取下单幂等 Token |

@@ -171,6 +171,35 @@ public class CartServiceImpl implements CartService {
         return R.ok(checked ? "已勾选" : "已取消勾选");
     }
 
+    /** 批量勾选/取消勾选所有商品（分布式锁保护并发） */
+    @Override
+    public R<String> checkAllItems(Long userId, Boolean checked) {
+        String key = cartKey(userId);
+
+        RLock lock = redissonClient.getLock(key + ":lock");
+        try {
+            lock.lock(5, TimeUnit.SECONDS);
+
+            Map<Object, Object> entries = redisTemplate.opsForHash().entries(key);
+            if (entries.isEmpty()) {
+                return R.ok("购物车为空");
+            }
+
+            for (Map.Entry<Object, Object> entry : entries.entrySet()) {
+                CartItem cartItem = JSON.parseObject(entry.getValue().toString(), CartItem.class);
+                cartItem.setChecked(checked);
+                redisTemplate.opsForHash().put(key, entry.getKey(), JSON.toJSONString(cartItem));
+            }
+
+            evictCartCache(userId);
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
+        }
+        return R.ok(checked ? "已全选" : "已取消全选");
+    }
+
     /** 清空购物车（DEL 整个 Key） */
     @Override
     public R<String> clearCart(Long userId) {

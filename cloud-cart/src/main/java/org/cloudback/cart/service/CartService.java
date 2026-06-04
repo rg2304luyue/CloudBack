@@ -24,6 +24,9 @@ public interface CartService {
     /** 勾选/取消勾选商品 */
     R<String> checkItem(Long userId, Long productId, Boolean checked);
 
+    /** 批量勾选/取消勾选所有商品 */
+    R<String> checkAllItems(Long userId, Boolean checked);
+
     /** 清空购物车 */
     R<String> clearCart(Long userId);
 
