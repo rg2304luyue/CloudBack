@@ -28,14 +28,16 @@ public class PaymentController {
 
     /** GET /payment/{orderNo} — 纯查询支付记录（只读，不触发支付宝同步） */
     @GetMapping("/{orderNo}")
-    public R<Payment> getPaymentByOrderNo(@PathVariable String orderNo) {
-        return paymentService.getPaymentByOrderNo(orderNo);
+    public R<Payment> getPaymentByOrderNo(@PathVariable String orderNo,
+                                          @RequestHeader(value = "X-User-Id", required = false) Long userId) {
+        return paymentService.getPaymentByOrderNo(orderNo, userId);
     }
 
     /** POST /payment/{orderNo}/sync — 主动向支付宝同步最新支付状态 */
     @PostMapping("/{orderNo}/sync")
-    public R<Payment> syncPaymentStatus(@PathVariable String orderNo) {
-        return paymentService.syncPaymentStatus(orderNo);
+    public R<Payment> syncPaymentStatus(@PathVariable String orderNo,
+                                        @RequestHeader(value = "X-User-Id", required = false) Long userId) {
+        return paymentService.syncPaymentStatus(orderNo, userId);
     }
 
     /** POST /payment/alipay — 发起支付宝电脑网站支付，返回支付表单 HTML（含 30 分钟超时） */
@@ -73,6 +75,9 @@ public class PaymentController {
                              HttpServletResponse response) throws Exception {
         String orderNo = request.getParameter("out_trade_no");
         if (orderNo == null || orderNo.isEmpty()) {
+            orderNo = request.getParameter("orderNo");
+        }
+        if (orderNo == null || orderNo.isEmpty()) {
             response.sendRedirect(alipayProperties.getFrontendUrl() + "/payment/result?error=no_order");
             return;
         }
@@ -80,7 +85,7 @@ public class PaymentController {
         R<Payment> paymentResult;
         try {
             // 主动向支付宝查询并同步最新状态
-            paymentResult = paymentService.syncPaymentStatus(orderNo);
+            paymentResult = paymentService.syncPaymentStatus(orderNo, null);
         } catch (Exception e) {
             log.warn("同步回跳查询支付状态异常: orderNo={}", orderNo, e);
             response.sendRedirect(alipayProperties.getFrontendUrl() + "/payment/result?error=query_failed");

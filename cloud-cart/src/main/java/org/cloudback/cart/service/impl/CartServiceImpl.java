@@ -55,6 +55,9 @@ public class CartServiceImpl implements CartService {
         if (quantity == null || quantity <= 0) {
             throw new BusinessException("商品数量必须大于0");
         }
+        if (quantity > CART_QUANTITY_MAX) {
+            throw new BusinessException("商品数量不能超过" + CART_QUANTITY_MAX);
+        }
         R<CartItem> result = productFeignClient.getProductDetail(productId);
         if (result.getCode() != 200 || result.getData() == null) {
             if (result.getCode() == ResultCode.SERVICE_UNAVAILABLE.getCode()) {
@@ -136,11 +139,20 @@ public class CartServiceImpl implements CartService {
         return R.ok("更新数量成功");
     }
 
-    /** 移除商品（HDEL） */
+    /** 移除商品（HDEL，分布式锁保护并发） */
     @Override
     public R<String> removeItem(Long userId, Long productId) {
-        redisTemplate.opsForHash().delete(cartKey(userId), String.valueOf(productId));
-        evictCartCache(userId);
+        String key = cartKey(userId);
+        RLock lock = redissonClient.getLock(key + ":lock");
+        try {
+            lock.lock(5, TimeUnit.SECONDS);
+            redisTemplate.opsForHash().delete(key, String.valueOf(productId));
+            evictCartCache(userId);
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
+        }
         return R.ok("移除成功");
     }
 
@@ -200,11 +212,20 @@ public class CartServiceImpl implements CartService {
         return R.ok(checked ? "已全选" : "已取消全选");
     }
 
-    /** 清空购物车（DEL 整个 Key） */
+    /** 清空购物车（DEL 整个 Key，分布式锁保护并发） */
     @Override
     public R<String> clearCart(Long userId) {
-        redisTemplate.delete(cartKey(userId));
-        evictCartCache(userId);
+        String key = cartKey(userId);
+        RLock lock = redissonClient.getLock(key + ":lock");
+        try {
+            lock.lock(5, TimeUnit.SECONDS);
+            redisTemplate.delete(key);
+            evictCartCache(userId);
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
+        }
         return R.ok("购物车已清空");
     }
 

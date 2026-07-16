@@ -51,3 +51,7 @@ meili:
   host: ${MEILI_HOST:${VM_HOST:localhost}}
   port: ${MEILI_PORT:7700}
   master-key: ${MEILI_MASTER_KEY:meili-master-key-change-me}
+cloud:
+  internal:
+    token: ${CLOUD_INTERNAL_TOKEN}
+

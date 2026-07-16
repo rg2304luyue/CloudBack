@@ -140,7 +140,7 @@ CREATE TABLE IF NOT EXISTS `payment` (
     `update_time`   DATETIME      DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     `deleted`       TINYINT       DEFAULT 0 COMMENT '逻辑删除',
     PRIMARY KEY (`id`),
-    KEY `idx_order_no` (`order_no`),
+    UNIQUE KEY `uk_order_no` (`order_no`),
     KEY `idx_user_id` (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='支付记录表';
 

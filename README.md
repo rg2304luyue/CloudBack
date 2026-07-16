@@ -1038,3 +1038,50 @@ mvn spring-boot:run -pl cloud-payment
 | 搜索无结果 | 关键词无匹配或索引未重建 | 访问 `http://VM:7700` 用 Meilisearch web UI 验证索引数据 |
 | Meilisearch 连接超时 | 容器未启动或防火墙未放行 | `docker compose up -d meilisearch`，`sudo ufw allow 7700/tcp` |
 | Meilisearch web UI 提示 Authorization header missing | API key 输入后页面未正确携带 | 刷新页面重试，或使用浏览器无痕窗口 |
+
+---
+
+## 2026-07 Reliability and Payment Recovery Update
+
+### Required configuration
+
+Copy .env.example to the private .env file and set values for the target environment. Do not commit the real .env.
+
+- CLOUD_INTERNAL_TOKEN is required by cloud-product and cloud-order. Use one high-entropy shared value for all internal callers. A missing or inconsistent value prevents startup or causes protected stock deduction and restoration requests to fail.
+- ALIPAY_*, JWT_SECRET, and middleware addresses remain environment-specific. The backend loads .env from the working directory or up to five parent directories.
+
+### Payment confirmation and recovery
+
+Alipay async notification is the primary confirmation path; the browser return is only a convenience path. A payment can still complete at Alipay when the browser return, network connection, or payment service is interrupted.
+
+1. Before a new page-pay form is created, the payment service actively queries Alipay for an existing pending record. This avoids sending a paid trade back to Alipay and receiving TRADE_HAS_SUCCESS.
+2. GET /api/payment/{orderNo} also performs a rate-limited active query for a pending payment. POST /api/payment/{orderNo}/sync is the authenticated explicit reconciliation endpoint.
+3. PaymentReconciliationScheduler starts ten seconds after cloud-payment starts, then runs every 30 seconds. It scans at most 20 pending payments created in the most recent 30 minutes, atomically claims each record through last_sync_time, and reconciles it with Alipay.
+4. TRADE_SUCCESS and TRADE_FINISHED mark the record paid idempotently. TRADE_CLOSED marks a still-pending local payment closed. The scheduler does not replace refund handling or manual investigation for transactions outside its 30-minute payment window.
+
+For an already-paid order that still appears unpaid, restart the payment service after its middleware is healthy, wait for a reconciliation cycle, then refresh the order list. Do not directly update order or payment rows to simulate a payment.
+
+### Existing database check
+
+The scheduler requires payment.last_sync_time. New databases receive it from sql/init.sql, but existing databases must be checked before deployment:
+
+    SHOW COLUMNS FROM payment LIKE 'last_sync_time';
+    SHOW INDEX FROM payment WHERE Column_name = 'order_no';
+    SELECT order_no, COUNT(*)
+    FROM payment
+    GROUP BY order_no
+    HAVING COUNT(*) > 1;
+
+The payment.order_no index is expected to be unique (uk_order_no) so a payment record is idempotent per order. If an existing database lacks the column or unique constraint, apply a reviewed migration appropriate for that database. Do not treat re-running the whole initialization script as a production migration.
+
+### Reliable stock and message delivery
+
+- Product stock deduction/restoration endpoints are internal-only and require X-Internal-Token.
+- An order cancellation or timeout first attempts stock restoration. A failed restoration is persisted as a stock-restore Outbox message; the consumer uses a Redis idempotency key before calling the product service.
+- Order creation, payment-result propagation, and stock restoration use Outbox delivery. A sender conditionally claims records from PENDING to SENDING; messages stuck in SENDING are recovered after the timeout and retried with backoff. This prevents multiple service instances from sending the same message concurrently.
+
+### Verification
+
+    .\mvnw.cmd -q -DskipTests -pl cloud-payment,cloud-order -am compile
+
+Before testing a payment recovery scenario, ensure MySQL, Redis, Kafka, Nacos, and the payment service are running. Complete the sandbox payment once, then verify that the payment service updates the payment record and the order service consumes the emitted payment result.

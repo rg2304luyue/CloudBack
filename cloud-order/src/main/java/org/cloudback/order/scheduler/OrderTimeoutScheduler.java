@@ -3,6 +3,8 @@ package org.cloudback.order.scheduler;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.cloudback.order.service.OrderService;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -14,7 +16,7 @@ import java.util.concurrent.TimeUnit;
  * 订单超时自动取消：双层机制
  * 1. 高频（1秒）：从 Redis ZSet 中取出过期订单取消
  * 2. 低频（5分钟）：DB 兜底扫描，防止 Redis 数据丢失
- * 使用 Redis SETNX 分布式锁防止多实例重复执行。
+ * 使用 Redisson 分布式锁防止多实例重复执行。
  */
 @Slf4j
 @Component
@@ -26,14 +28,18 @@ public class OrderTimeoutScheduler {
 
     private final OrderService orderService;
     private final RedisTemplate<String, Object> redisTemplate;
+    private final RedissonClient redissonClient;
 
     /** 高频扫描（每 1 秒）：从 Redis ZSet rangeByScore 取过期订单 → ZREM 移除 → 逐个取消（每次最多 20 条） */
     @Scheduled(fixedRate = 1000)
     public void cancelByRedis() {
-        // 分布式锁：SETNX，过期 5 秒防止死锁
-        Boolean locked = redisTemplate.opsForValue()
-                .setIfAbsent(REDIS_LOCK_KEY, "1", 5, TimeUnit.SECONDS);
-        if (locked == null || !locked) {
+        RLock lock = redissonClient.getLock(REDIS_LOCK_KEY);
+        try {
+            if (!lock.tryLock(0, 30, TimeUnit.SECONDS)) {
+                return;
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
             return;
         }
 
@@ -60,16 +66,22 @@ public class OrderTimeoutScheduler {
                 }
             }
         } finally {
-            redisTemplate.delete(REDIS_LOCK_KEY);
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
         }
     }
 
     /** 低频兜底（每 5 分钟）：扫描 DB 中超时未支付订单并取消，防止 Redis ZSet 数据丢失 */
     @Scheduled(fixedRate = 300000)
     public void cancelExpiredOrders() {
-        Boolean locked = redisTemplate.opsForValue()
-                .setIfAbsent(DB_LOCK_KEY, "1", 60, TimeUnit.SECONDS);
-        if (locked == null || !locked) {
+        RLock lock = redissonClient.getLock(DB_LOCK_KEY);
+        try {
+            if (!lock.tryLock(0, 30, TimeUnit.SECONDS)) {
+                return;
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
             return;
         }
 
@@ -81,7 +93,9 @@ public class OrderTimeoutScheduler {
         } catch (Exception e) {
             log.error("DB 兜底扫描异常", e);
         } finally {
-            redisTemplate.delete(DB_LOCK_KEY);
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
         }
     }
 }

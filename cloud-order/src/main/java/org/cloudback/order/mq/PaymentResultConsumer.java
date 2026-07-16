@@ -36,10 +36,12 @@ public class PaymentResultConsumer {
 
         String orderNo;
         String status;
+        String tradeNo;
         try {
             JSONObject msg = JSON.parseObject(message);
             orderNo = msg.getString("orderNo");
             status = msg.getString("status");
+            tradeNo = msg.getString("tradeNo");
         } catch (JSONException e) {
             log.error("支付结果消息反序列化失败, 丢弃无效消息: {}", message, e);
             return; // 无效消息不重试
@@ -71,7 +73,9 @@ public class PaymentResultConsumer {
                 Order order = orderMapper.selectOne(
                         new LambdaQueryWrapper<Order>().eq(Order::getOrderNo, orderNo));
                 if (order != null && SystemConstants.ORDER_STATUS_CANCELLED.equals(order.getStatus())) {
-                    log.error("支付-取消竞态：订单已取消但支付成功，需人工退款 orderNo={}", orderNo);
+                    order.setRemark("[需退款] 支付成功但订单已取消, tradeNo=" + tradeNo);
+                    orderMapper.updateById(order);
+                    log.error("支付-取消竞态：订单已取消但支付成功，已标记需退款 orderNo={}, tradeNo={}", orderNo, tradeNo);
                 } else {
                     log.warn("订单状态更新影响0行, 可能已被处理或状态不匹配: orderNo={}", orderNo);
                 }

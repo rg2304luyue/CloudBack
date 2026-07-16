@@ -52,3 +52,8 @@ mybatis-plus:
 
 knife4j:
   enable: true
+
+cloud:
+  internal:
+    token: ${CLOUD_INTERNAL_TOKEN}
+

@@ -4,6 +4,7 @@ import org.cloudback.common.result.R;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestHeader;
 
 import java.util.List;
@@ -18,4 +19,9 @@ public interface CartFeignClient {
     /** DELETE /cart/items — 清空用户购物车（下单成功后调用） */
     @DeleteMapping("/cart/items")
     R<String> clearCart(@RequestHeader("X-User-Id") Long userId);
+
+    /** DELETE /cart/items/{productId} — 删除单个商品 */
+    @DeleteMapping("/cart/items/{productId}")
+    R<String> removeItem(@RequestHeader("X-User-Id") Long userId,
+                         @PathVariable("productId") Long productId);
 }

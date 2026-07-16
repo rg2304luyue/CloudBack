@@ -41,18 +41,21 @@ public class PaymentServiceImpl implements PaymentService {
 
     /** 根据订单号查询支付记录。若本地仍是待支付，主动向支付宝查询真实状态并同步（前端支付结果页依赖此行为）。 */
     @Override
-    public R<Payment> getPaymentByOrderNo(String orderNo) {
+    public R<Payment> getPaymentByOrderNo(String orderNo, Long userId) {
         Payment payment = paymentMapper.selectOne(
                 new LambdaQueryWrapper<Payment>().eq(Payment::getOrderNo, orderNo));
         if (payment == null) {
             throw new BusinessException("支付记录不存在");
+        }
+        if (userId != null && !payment.getUserId().equals(userId)) {
+            throw new BusinessException("无权查询此订单");
         }
         // 若本地待支付，主动同步支付宝状态（30秒内不重复查询，避免频率限制）
         if (payment.getStatus() == 0) {
             boolean shouldSync = payment.getLastSyncTime() == null
                     || LocalDateTime.now().isAfter(payment.getLastSyncTime().plusSeconds(30));
             if (shouldSync) {
-                return syncPaymentStatus(orderNo);
+                return syncPaymentStatus(orderNo, userId);
             }
         }
         return R.ok(payment);
@@ -61,11 +64,14 @@ public class PaymentServiceImpl implements PaymentService {
     /** 主动向支付宝查询支付状态并同步 */
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public R<Payment> syncPaymentStatus(String orderNo) {
+    public R<Payment> syncPaymentStatus(String orderNo, Long userId) {
         Payment payment = paymentMapper.selectOne(
                 new LambdaQueryWrapper<Payment>().eq(Payment::getOrderNo, orderNo));
         if (payment == null) {
             throw new BusinessException("支付记录不存在");
+        }
+        if (userId != null && !payment.getUserId().equals(userId)) {
+            throw new BusinessException("无权查询此订单");
         }
 
         if (payment.getStatus() == 0) {
@@ -84,11 +90,22 @@ public class PaymentServiceImpl implements PaymentService {
                         response.isSuccess(), response.getTradeStatus(), response.getTradeNo(),
                         response.getBody());
 
-                if (response.isSuccess() && "TRADE_SUCCESS".equals(response.getTradeStatus())) {
+                if (response.isSuccess() && "TRADE_CLOSED".equals(response.getTradeStatus())) {
+                    paymentMapper.update(null,
+                            new LambdaUpdateWrapper<Payment>()
+                                    .eq(Payment::getOrderNo, orderNo)
+                                    .eq(Payment::getStatus, 0)
+                                    .set(Payment::getStatus, 2));
+                    payment = paymentMapper.selectOne(
+                            new LambdaQueryWrapper<Payment>().eq(Payment::getOrderNo, orderNo));
+                    log.info("Alipay trade closed: orderNo={}", orderNo);
+                } else if (response.isSuccess()
+                        && ("TRADE_SUCCESS".equals(response.getTradeStatus())
+                        || "TRADE_FINISHED".equals(response.getTradeStatus()))) {
                     markPaid(orderNo, response.getTradeNo());
-                    payment.setStatus(1);
-                    payment.setTradeNo(response.getTradeNo());
-                    payment.setPayTime(LocalDateTime.now());
+                    // 重新从数据库读取，确保返回的是 markPaid 写入后的完整数据
+                    payment = paymentMapper.selectOne(
+                            new LambdaQueryWrapper<Payment>().eq(Payment::getOrderNo, orderNo));
                     log.info("支付宝同步支付成功: orderNo={}", orderNo);
                 } else {
                     log.warn("支付宝查询未确认支付: orderNo={}, success={}, tradeStatus={}",
@@ -142,6 +159,11 @@ public class PaymentServiceImpl implements PaymentService {
         if (!payment.getUserId().equals(userId)) {
             return R.fail("无权操作此订单");
         }
+        if (payment.getStatus() == 0) {
+            syncPaymentStatus(orderNo, userId);
+            payment = paymentMapper.selectOne(
+                    new LambdaQueryWrapper<Payment>().eq(Payment::getOrderNo, orderNo));
+        }
         if (payment.getStatus() != 0) {
             return R.fail("订单无需支付");
         }
@@ -165,6 +187,10 @@ public class PaymentServiceImpl implements PaymentService {
             String form = alipayClient.pageExecute(request).getBody();
             return R.ok(form);
         } catch (AlipayApiException e) {
+            if (e.getMessage() != null && e.getMessage().contains("TRADE_HAS_SUCCESS")) {
+                syncPaymentStatus(orderNo, userId);
+                return R.fail("order is already paid; payment status is being synchronized");
+            }
             log.error("生成支付宝支付表单失败: orderNo={}", orderNo, e);
             return R.fail("创建支付订单失败，请重试");
         }
@@ -268,6 +294,7 @@ public class PaymentServiceImpl implements PaymentService {
         JSONObject resultMsg = new JSONObject();
         resultMsg.put("orderNo", orderNo);
         resultMsg.put("status", "SUCCESS");
+        resultMsg.put("tradeNo", tradeNo);
         outboxService.saveMessage(SystemConstants.KAFKA_TOPIC_PAYMENT_RESULT, orderNo, resultMsg.toJSONString());
 
         log.info("支付成功已标记: orderNo={}, tradeNo={}", orderNo, tradeNo);
