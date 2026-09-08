@@ -1,5 +1,6 @@
 package org.cloudback.user.controller;
 
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.cloudback.common.entity.User;
 import org.cloudback.common.result.R;
@@ -37,7 +38,7 @@ public class AdminUserController {
     @PatchMapping("/applications/{id}")
     public R<String> processApplication(@RequestHeader("X-User-Role") String role,
                                         @PathVariable Long id,
-                                        @RequestBody ProcessApplicationRequest request) {
+                                        @Valid @RequestBody ProcessApplicationRequest request) {
         return userService.processApplication(role, id, request.approved());
     }
 }

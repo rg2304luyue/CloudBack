@@ -1,6 +1,7 @@
 package org.cloudback.order.controller;
 
 import lombok.RequiredArgsConstructor;
+import jakarta.validation.Valid;
 import org.cloudback.common.result.R;
 import org.cloudback.order.dto.CreateOrderRequest;
 import org.cloudback.order.model.entity.Order;
@@ -25,7 +26,7 @@ public class OrderController {
     /** POST /orders — 创建订单：幂等校验 → 查购物车 → 扣库存 → 写库 → 清购物车 → Kafka → Redis 超时 */
     @PostMapping
     public R<Order> createOrder(@RequestHeader("X-User-Id") Long userId,
-                                @RequestBody CreateOrderRequest request) {
+                                @Valid @RequestBody CreateOrderRequest request) {
         return orderService.createOrder(userId, request.addressId(), request.remark(), request.orderToken());
     }
 
@@ -34,6 +35,13 @@ public class OrderController {
     public R<Order> getOrderDetail(@RequestHeader("X-User-Id") Long userId,
                                    @PathVariable Long id) {
         return orderService.getOrderDetail(userId, id);
+    }
+
+    /** 按订单号查询当前用户的订单，供支付结果页核对状态。 */
+    @GetMapping("/by-no/{orderNo}")
+    public R<Order> getOrderByNo(@RequestHeader("X-User-Id") Long userId,
+                                  @PathVariable String orderNo) {
+        return orderService.getOrderByNo(userId, orderNo);
     }
 
     /** GET /orders — 分页查询当前用户的订单列表，按创建时间降序 */

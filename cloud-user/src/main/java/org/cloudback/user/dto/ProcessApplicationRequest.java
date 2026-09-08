@@ -1,3 +1,7 @@
 package org.cloudback.user.dto;
 
-public record ProcessApplicationRequest(Boolean approved) {}
+import jakarta.validation.constraints.NotNull;
+
+public record ProcessApplicationRequest(
+        @NotNull(message = "审批结果不能为空") Boolean approved
+) {}

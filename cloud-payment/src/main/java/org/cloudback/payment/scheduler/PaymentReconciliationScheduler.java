@@ -12,14 +12,13 @@ import org.springframework.stereotype.Component;
 import java.time.LocalDateTime;
 import java.util.List;
 
-/** Reconciles recent pending payments after a lost browser return or Alipay notify. */
+/** Reconciles pending payments regardless of order age after a lost return or notify. */
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class PaymentReconciliationScheduler {
 
     private static final int BATCH_SIZE = 20;
-    private static final int PAYMENT_TIMEOUT_MINUTES = 30;
     private static final int QUERY_INTERVAL_SECONDS = 30;
 
     private final PaymentMapper paymentMapper;
@@ -28,15 +27,15 @@ public class PaymentReconciliationScheduler {
     @Scheduled(initialDelay = 10000, fixedDelay = QUERY_INTERVAL_SECONDS * 1000L)
     public void reconcilePendingPayments() {
         LocalDateTime now = LocalDateTime.now();
-        LocalDateTime cutoff = now.minusMinutes(PAYMENT_TIMEOUT_MINUTES);
 
         LambdaQueryWrapper<Payment> wrapper = new LambdaQueryWrapper<Payment>()
                 .eq(Payment::getStatus, 0)
-                .ge(Payment::getCreateTime, cutoff)
                 .and(query -> query.isNull(Payment::getLastSyncTime)
                         .or()
                         .le(Payment::getLastSyncTime, now.minusSeconds(QUERY_INTERVAL_SECONDS)))
-                .orderByAsc(Payment::getCreateTime)
+                // Rotate through pending records; oldest orders must not monopolize every batch.
+                .orderByAsc(Payment::getLastSyncTime)
+                .orderByAsc(Payment::getId)
                 .last("LIMIT " + BATCH_SIZE);
 
         List<Payment> pendingPayments = paymentMapper.selectList(wrapper);

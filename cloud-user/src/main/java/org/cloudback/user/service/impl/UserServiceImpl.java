@@ -190,25 +190,33 @@ public class UserServiceImpl implements UserService {
         if (!SystemConstants.ROLE_ADMIN.equals(role)) {
             throw new BusinessException(ResultCode.ADMIN_ONLY);
         }
-        // 条件 UPDATE 防并发：仅当 status=PENDING 时更新
-        LambdaUpdateWrapper<SellerApplication> updateWrapper = new LambdaUpdateWrapper<>();
-        updateWrapper.eq(SellerApplication::getId, applicationId)
-                     .eq(SellerApplication::getStatus, "PENDING");
         SellerApplication app = applicationMapper.selectById(applicationId);
         if (app == null || !"PENDING".equals(app.getStatus())) {
             return R.fail("申请不存在或已处理");
         }
 
-        if (approved) {
-            app.setStatus("APPROVED");
-            User updateUser = new User();
-            updateUser.setId(app.getUserId());
-            updateUser.setRole(SystemConstants.ROLE_SELLER);
-            userMapper.updateById(updateUser);
-        } else {
-            app.setStatus("REJECTED");
+        // 以数据库条件更新竞争唯一审批权，并发请求只有一个能成功。
+        SellerApplication applicationUpdate = new SellerApplication();
+        applicationUpdate.setStatus(approved ? "APPROVED" : "REJECTED");
+        int applicationRows = applicationMapper.update(applicationUpdate,
+                new LambdaUpdateWrapper<SellerApplication>()
+                        .eq(SellerApplication::getId, applicationId)
+                        .eq(SellerApplication::getStatus, "PENDING"));
+        if (applicationRows != 1) {
+            return R.fail("申请不存在或已处理");
         }
-        applicationMapper.updateById(app);
+
+        if (approved) {
+            User updateUser = new User();
+            updateUser.setRole(SystemConstants.ROLE_SELLER);
+            int userRows = userMapper.update(updateUser,
+                    new LambdaUpdateWrapper<User>()
+                            .eq(User::getId, app.getUserId())
+                            .eq(User::getRole, SystemConstants.ROLE_BUYER));
+            if (userRows != 1) {
+                throw new BusinessException("用户不存在或角色已变化，无法批准申请");
+            }
+        }
         return R.ok(approved ? "已通过申请" : "已拒绝申请");
     }
 

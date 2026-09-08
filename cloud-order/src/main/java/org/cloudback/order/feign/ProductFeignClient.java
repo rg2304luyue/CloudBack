@@ -13,11 +13,13 @@ public interface ProductFeignClient {
     @PostMapping("/products/{id}/stock/deduct")
     R<String> deductStock(@PathVariable Long id,
                           @RequestParam Integer quantity,
+                          @RequestParam String orderNo,
                           @RequestHeader(SystemConstants.INTERNAL_TOKEN_HEADER) String internalToken);
 
     @PostMapping("/products/{id}/stock/restore")
     R<String> restoreStock(@PathVariable Long id,
                            @RequestParam Integer quantity,
+                           @RequestParam String orderNo,
                            @RequestHeader(SystemConstants.INTERNAL_TOKEN_HEADER) String internalToken);
 
     @GetMapping("/products/{id}")

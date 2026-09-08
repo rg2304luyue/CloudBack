@@ -41,6 +41,7 @@ public class PaymentServiceImpl implements PaymentService {
 
     /** 根据订单号查询支付记录。若本地仍是待支付，主动向支付宝查询真实状态并同步（前端支付结果页依赖此行为）。 */
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public R<Payment> getPaymentByOrderNo(String orderNo, Long userId) {
         Payment payment = paymentMapper.selectOne(
                 new LambdaQueryWrapper<Payment>().eq(Payment::getOrderNo, orderNo));
@@ -77,8 +78,16 @@ public class PaymentServiceImpl implements PaymentService {
         if (payment.getStatus() == 0) {
             log.info("本地状态待支付，主动查询支付宝: orderNo={}", orderNo);
             // 更新查询时间，防止频繁调用支付宝 API
-            payment.setLastSyncTime(LocalDateTime.now());
-            paymentMapper.updateById(payment);
+            LocalDateTime syncTime = LocalDateTime.now();
+            int updated = paymentMapper.update(null, new LambdaUpdateWrapper<Payment>()
+                    .eq(Payment::getOrderNo, orderNo)
+                    .eq(Payment::getStatus, 0)
+                    .set(Payment::getLastSyncTime, syncTime));
+            if (updated == 0) {
+                // 条件更新使用当前读；普通 SELECT 在可重复读事务中可能仍返回旧快照。
+                return R.ok(selectCurrentPayment(orderNo));
+            }
+            payment.setLastSyncTime(syncTime);
             try {
                 AlipayTradeQueryRequest request = new AlipayTradeQueryRequest();
                 JSONObject biz = new JSONObject();
@@ -102,7 +111,7 @@ public class PaymentServiceImpl implements PaymentService {
                 } else if (response.isSuccess()
                         && ("TRADE_SUCCESS".equals(response.getTradeStatus())
                         || "TRADE_FINISHED".equals(response.getTradeStatus()))) {
-                    markPaid(orderNo, response.getTradeNo());
+                    markPaid(payment, response.getTradeNo());
                     // 重新从数据库读取，确保返回的是 markPaid 写入后的完整数据
                     payment = paymentMapper.selectOne(
                             new LambdaQueryWrapper<Payment>().eq(Payment::getOrderNo, orderNo));
@@ -150,6 +159,7 @@ public class PaymentServiceImpl implements PaymentService {
 
     /** 生成支付宝电脑网站支付 HTML 表单：校验权限 → 构建 pagePay 请求 → 设置 30 分钟超时 → 返回表单 */
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public R<String> createPayForm(String orderNo, Long userId) {
         Payment payment = paymentMapper.selectOne(
                 new LambdaQueryWrapper<Payment>().eq(Payment::getOrderNo, orderNo));
@@ -161,8 +171,7 @@ public class PaymentServiceImpl implements PaymentService {
         }
         if (payment.getStatus() == 0) {
             syncPaymentStatus(orderNo, userId);
-            payment = paymentMapper.selectOne(
-                    new LambdaQueryWrapper<Payment>().eq(Payment::getOrderNo, orderNo));
+            payment = selectCurrentPayment(orderNo);
         }
         if (payment.getStatus() != 0) {
             return R.fail("订单无需支付");
@@ -213,68 +222,80 @@ public class PaymentServiceImpl implements PaymentService {
             return "failure";
         }
 
-        // 2. 校验 app_id
+        // 2. 必填字段与应用身份校验
         String notifyAppId = params.get("app_id");
-        if (notifyAppId != null && !notifyAppId.equals(alipayProperties.getAppId())) {
-            log.error("支付宝通知 app_id 不匹配: expected={}, actual={}", alipayProperties.getAppId(), notifyAppId);
-            return "failure";
-        }
-
-        // 3. 获取必要字段
         String orderNo = params.get("out_trade_no");
         String tradeNo = params.get("trade_no");
-        if (orderNo == null || tradeNo == null) {
-            log.error("支付宝通知缺少必要字段: orderNo={}, tradeNo={}", orderNo, tradeNo);
+        String tradeStatus = params.get("trade_status");
+        String alipayAmount = params.get("total_amount");
+        if (isBlank(notifyAppId) || isBlank(orderNo) || isBlank(tradeNo)
+                || isBlank(tradeStatus) || isBlank(alipayAmount)) {
+            log.error("支付宝通知缺少必填字段");
+            return "failure";
+        }
+        if (isBlank(alipayProperties.getAppId()) || !alipayProperties.getAppId().equals(notifyAppId)) {
+            log.error("支付宝通知 app_id 不匹配");
             return "failure";
         }
 
-        // 4. 校验支付金额
-        String alipayAmount = params.get("total_amount");
-        if (alipayAmount != null) {
-            Payment localPayment = paymentMapper.selectOne(
-                    new LambdaQueryWrapper<Payment>().eq(Payment::getOrderNo, orderNo));
-            if (localPayment != null && localPayment.getAmount() != null) {
-                BigDecimal alipayDecimal = new BigDecimal(alipayAmount);
-                if (localPayment.getAmount().compareTo(alipayDecimal) != 0) {
-                    log.error("支付金额不匹配: orderNo={}, local={}, alipay={}",
-                            orderNo, localPayment.getAmount(), alipayAmount);
-                    return "failure";
-                }
+        // 3. 本地支付记录与金额校验。未知订单返回 failure，让支付宝稍后重试。
+        Payment localPayment = paymentMapper.selectOne(
+                new LambdaQueryWrapper<Payment>().eq(Payment::getOrderNo, orderNo));
+        if (localPayment == null || localPayment.getAmount() == null
+                || !"ALIPAY".equals(localPayment.getPayMethod())) {
+            log.error("支付宝通知找不到有效的本地支付记录: orderNo={}", orderNo);
+            return "failure";
+        }
+        try {
+            BigDecimal callbackAmount = new BigDecimal(alipayAmount);
+            if (callbackAmount.signum() <= 0 || localPayment.getAmount().compareTo(callbackAmount) != 0) {
+                log.error("支付宝通知金额不匹配: orderNo={}", orderNo);
+                return "failure";
             }
+        } catch (NumberFormatException e) {
+            log.error("支付宝通知金额格式非法: orderNo={}", orderNo);
+            return "failure";
         }
 
-        // 5. 处理交易状态
-        String tradeStatus = params.get("trade_status");
+        // 4. 只确认已经被本地可靠处理的明确状态
         if ("TRADE_SUCCESS".equals(tradeStatus) || "TRADE_FINISHED".equals(tradeStatus)) {
-            markPaid(orderNo, tradeNo);
+            if (!markPaid(localPayment, tradeNo)) {
+                return "failure";
+            }
             log.info("支付宝异步通知处理成功: orderNo={}, tradeNo={}", orderNo, tradeNo);
             return "success";
         } else if ("TRADE_CLOSED".equals(tradeStatus)) {
-            // 支付超时关闭，标记支付失败
-            paymentMapper.update(null,
+            int rows = paymentMapper.update(null,
                     new LambdaUpdateWrapper<Payment>()
                             .eq(Payment::getOrderNo, orderNo)
                             .eq(Payment::getStatus, 0)
                             .set(Payment::getStatus, 2));
-            log.info("支付宝交易已关闭（超时）: orderNo={}", orderNo);
-            return "success";
+            Payment current = rows == 0 ? selectCurrentPayment(orderNo) : localPayment;
+            boolean handled = rows == 1 || (current != null && (current.getStatus() == 2
+                    || (current.getStatus() == 1 && tradeNo.equals(current.getTradeNo()))));
+            if (handled) {
+                log.info("支付宝交易已关闭（超时）: orderNo={}", orderNo);
+                return "success";
+            }
         }
 
-        log.info("支付宝通知非终态: trade_status={}, orderNo={}", tradeStatus, orderNo);
-        return "success";
+        log.warn("支付宝通知状态未被处理: tradeStatus={}, orderNo={}", tradeStatus, orderNo);
+        return "failure";
     }
 
     /** 标记支付成功：幂等检查 → 条件 UPDATE payment SET status=1 → 仅成功时 Kafka 通知订单服务 */
-    private void markPaid(String orderNo, String tradeNo) {
-        Payment existPayment = paymentMapper.selectOne(
-                new LambdaQueryWrapper<Payment>().eq(Payment::getOrderNo, orderNo));
-        if (existPayment == null) {
-            log.warn("支付记录不存在，无法标记支付成功: orderNo={}", orderNo);
-            return;
+    private boolean markPaid(Payment payment, String tradeNo) {
+        String orderNo = payment.getOrderNo();
+        if (payment.getStatus() == 1) {
+            boolean sameTrade = tradeNo.equals(payment.getTradeNo());
+            if (!sameTrade) {
+                log.error("已支付订单收到不同交易号: orderNo={}", orderNo);
+            }
+            return sameTrade;
         }
-        if (existPayment.getStatus() == 1) {
-            log.info("支付已处理，幂等跳过: orderNo={}", orderNo);
-            return;
+        if (payment.getStatus() != 0) {
+            log.warn("非待支付订单不能标记支付成功: orderNo={}, status={}", orderNo, payment.getStatus());
+            return false;
         }
 
         int rows = paymentMapper.update(null,
@@ -286,8 +307,8 @@ public class PaymentServiceImpl implements PaymentService {
                         .set(Payment::getPayTime, LocalDateTime.now()));
 
         if (rows == 0) {
-            log.warn("更新支付状态影响 0 行，可能已被并发处理: orderNo={}", orderNo);
-            return;
+            Payment current = selectCurrentPayment(orderNo);
+            return current != null && current.getStatus() == 1 && tradeNo.equals(current.getTradeNo());
         }
 
         // 仅更新成功时通过 Outbox 可靠发送 Kafka 通知
@@ -298,5 +319,15 @@ public class PaymentServiceImpl implements PaymentService {
         outboxService.saveMessage(SystemConstants.KAFKA_TOPIC_PAYMENT_RESULT, orderNo, resultMsg.toJSONString());
 
         log.info("支付成功已标记: orderNo={}, tradeNo={}", orderNo, tradeNo);
+        return true;
+    }
+
+    private Payment selectCurrentPayment(String orderNo) {
+        return paymentMapper.selectOne(new LambdaQueryWrapper<Payment>()
+                .eq(Payment::getOrderNo, orderNo).last("FOR UPDATE"));
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.isBlank();
     }
 }

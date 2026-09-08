@@ -14,6 +14,8 @@ import org.cloudback.common.result.R;
 import org.cloudback.common.result.ResultCode;
 import org.cloudback.product.dto.ProductRequest;
 import org.cloudback.product.mapper.ProductMapper;
+import org.cloudback.product.mapper.InventoryOperationMapper;
+import org.cloudback.product.model.entity.InventoryOperation;
 import org.cloudback.product.model.entity.Product;
 import org.cloudback.product.service.CategoryService;
 import org.cloudback.product.service.ProductService;
@@ -39,6 +41,7 @@ import java.util.stream.Collectors;
 public class ProductServiceImpl implements ProductService {
 
     private final ProductMapper productMapper;
+    private final InventoryOperationMapper inventoryOperationMapper;
     private final RedisTemplate<String, Object> redisTemplate;
     private final TwoLevelCacheService productDetailTwoLevel;
     private final TwoLevelCacheService hotProductsTwoLevel;
@@ -291,9 +294,13 @@ public class ProductServiceImpl implements ProductService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public R<String> deductStock(Long productId, Integer quantity) {
-        if (quantity == null || quantity <= 0) {
-            throw new BusinessException("库存扣减数量必须大于0");
+    public R<String> deductStock(Long productId, Integer quantity, String orderNo) {
+        InventoryOperation operation = lockInventoryOperation(productId, quantity, orderNo);
+        if ("RESERVED".equals(operation.getState())) {
+            return R.ok("扣减库存成功");
+        }
+        if ("RESTORED".equals(operation.getState())) {
+            throw new BusinessException("该订单库存操作已关闭，不能再次扣减");
         }
         int affected = productMapper.deductStockAtomically(productId, quantity);
         if (affected == 0) {
@@ -303,23 +310,46 @@ public class ProductServiceImpl implements ProductService {
             }
             throw new BusinessException(ResultCode.STOCK_INSUFFICIENT);
         }
+        inventoryOperationMapper.setState(orderNo, productId, "RESERVED");
         evictProductAfterCommit(productId);
         return R.ok("扣减库存成功");
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public R<String> restoreStock(Long productId, Integer quantity) {
-        if (quantity == null || quantity <= 0) {
-            throw new BusinessException("库存恢复数量必须大于0");
+    public R<String> restoreStock(Long productId, Integer quantity, String orderNo) {
+        InventoryOperation operation = lockInventoryOperation(productId, quantity, orderNo);
+        if ("RESTORED".equals(operation.getState())) {
+            return R.ok("回滚库存成功");
         }
-        int affected = productMapper.restoreStock(productId, quantity);
-        if (affected == 0) {
-            log.warn("Restore stock affected 0 rows, product may be deleted: productId={}", productId);
-            throw new BusinessException(ResultCode.PRODUCT_NOT_EXIST);
+        if ("RESERVED".equals(operation.getState())) {
+            int affected = productMapper.restoreStock(productId, quantity);
+            if (affected == 0) {
+                throw new BusinessException("库存恢复失败，请核对商品及销量");
+            }
+            evictProductAfterCommit(productId);
         }
-        evictProductAfterCommit(productId);
+        // An early restore closes the key without adding inventory; a late deduct must fail.
+        inventoryOperationMapper.setState(orderNo, productId, "RESTORED");
         return R.ok("回滚库存成功");
+    }
+
+    private InventoryOperation lockInventoryOperation(Long productId, Integer quantity, String orderNo) {
+        if (productId == null || productId <= 0 || quantity == null || quantity <= 0
+                || orderNo == null || orderNo.isBlank() || orderNo.length() > 32
+                || !orderNo.equals(orderNo.trim())) {
+            throw new BusinessException("库存操作参数无效");
+        }
+        inventoryOperationMapper.ensureExists(orderNo, productId, quantity);
+        InventoryOperation operation = inventoryOperationMapper.lock(orderNo, productId);
+        if (operation == null || !quantity.equals(operation.getQuantity())) {
+            throw new BusinessException("同一订单商品的库存操作数量不一致");
+        }
+        if (operation.getState() == null
+                || !Set.of("EMPTY", "RESERVED", "RESTORED").contains(operation.getState())) {
+            throw new BusinessException("库存操作状态异常");
+        }
+        return operation;
     }
 
     @PostConstruct

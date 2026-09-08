@@ -88,4 +88,27 @@ public class OutboxService {
         }
         outboxMessageMapper.updateById(msg);
     }
+
+    public List<OutboxMessage> listFailed(int limit) {
+        int safeLimit = Math.max(1, Math.min(limit, 100));
+        return outboxMessageMapper.selectList(new LambdaQueryWrapper<OutboxMessage>()
+                .eq(OutboxMessage::getStatus, STATUS_FAILED)
+                .orderByAsc(OutboxMessage::getCreateTime)
+                .last("LIMIT " + safeLimit));
+    }
+
+    public long countFailed() {
+        return outboxMessageMapper.selectCount(new LambdaQueryWrapper<OutboxMessage>()
+                .eq(OutboxMessage::getStatus, STATUS_FAILED));
+    }
+
+    public boolean requeueFailed(Long id) {
+        int rows = outboxMessageMapper.update(null, new LambdaUpdateWrapper<OutboxMessage>()
+                .eq(OutboxMessage::getId, id)
+                .eq(OutboxMessage::getStatus, STATUS_FAILED)
+                .set(OutboxMessage::getStatus, STATUS_PENDING)
+                .set(OutboxMessage::getRetryCount, 0)
+                .set(OutboxMessage::getNextRetryAt, null));
+        return rows == 1;
+    }
 }

@@ -50,10 +50,10 @@ public interface ProductService {
     // ==================== 库存操作（订单服务 Feign 调用） ====================
 
     /** 原子扣减库存（UPDATE SET stock=stock-N WHERE stock>=N），防止超卖；事务提交后驱逐缓存 */
-    R<String> deductStock(Long productId, Integer quantity);
+    R<String> deductStock(Long productId, Integer quantity, String orderNo);
 
     /** 回滚库存（取消订单/支付超时时恢复），同时扣减销量；事务提交后驱逐缓存 */
-    R<String> restoreStock(Long productId, Integer quantity);
+    R<String> restoreStock(Long productId, Integer quantity, String orderNo);
 
     // ==================== 管理员审核 ====================
 

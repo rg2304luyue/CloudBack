@@ -21,6 +21,9 @@ public interface OrderService {
     /** 查询订单详情 */
     R<Order> getOrderDetail(Long userId, Long orderId);
 
+    /** 按订单号查询当前用户的订单 */
+    R<Order> getOrderByNo(Long userId, String orderNo);
+
     /** 分页查询用户订单列表 */
     R<List<Order>> getOrderList(Long userId, Integer page, Integer size);
 

@@ -54,6 +54,12 @@ public class OrderServiceImpl implements OrderService {
 
     private static final long ORDER_TIMEOUT_MINUTES = 30;
     private static final int MAX_EXPIRED_ORDERS_PER_SCAN = 20;
+    private static final DefaultRedisScript<Long> CONSUME_ORDER_TOKEN_SCRIPT = new DefaultRedisScript<>(
+            "local v = redis.call('GET', KEYS[1]) " +
+                    "if not v then return -1 end " +
+                    "if v ~= ARGV[1] then return 0 end " +
+                    "redis.call('DEL', KEYS[1]) return 1",
+            Long.class);
 
     private final OrderMapper orderMapper;
     private final OrderItemMapper orderItemMapper;
@@ -119,13 +125,27 @@ public class OrderServiceImpl implements OrderService {
         fillAddress(userId, addressId, order);
 
         List<CartItemDTO> deductedItems = new ArrayList<>();
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                if (status == STATUS_ROLLED_BACK) {
+                    rollbackDeductedStock(orderNo, deductedItems);
+                } else if (status == STATUS_UNKNOWN) {
+                    log.error("Order transaction outcome unknown; inventory requires reconciliation: orderNo={}", orderNo);
+                }
+            }
+        });
         try {
             for (CartItemDTO item : checkedItems) {
-                R<String> stockResult = productFeignClient.deductStock(item.getProductId(), item.getQuantity(), internalToken);
+                // Include unknown outcomes: the remote commit may succeed before the response is lost.
+                deductedItems.add(item);
+                R<String> stockResult = productFeignClient.deductStock(item.getProductId(), item.getQuantity(), orderNo, internalToken);
+                if (stockResult == null) {
+                    throw new BusinessException("库存服务未返回结果");
+                }
                 if (stockResult.getCode() != 200) {
                     throw new BusinessException(stockResult.getCode(), stockResult.getMessage());
                 }
-                deductedItems.add(item);
             }
 
             saveOrderAndItems(order, orderItems);
@@ -135,7 +155,6 @@ public class OrderServiceImpl implements OrderService {
             log.info("Order created: orderNo={}, totalAmount={}", orderNo, totalAmount);
             return R.ok("下单成功", order);
         } catch (Exception e) {
-            rollbackDeductedStock(orderNo, deductedItems);
             throw e instanceof BusinessException ? (BusinessException) e : new BusinessException(e.getMessage());
         }
     }
@@ -148,6 +167,20 @@ public class OrderServiceImpl implements OrderService {
         }
         List<OrderItem> items = orderItemMapper.selectList(new LambdaQueryWrapper<OrderItem>().eq(OrderItem::getOrderId, orderId));
         order.setOrderItems(items);
+        return R.ok(order);
+    }
+
+    @Override
+    public R<Order> getOrderByNo(Long userId, String orderNo) {
+        if (userId == null || orderNo == null || orderNo.isBlank()) {
+            throw new BusinessException(ResultCode.ORDER_NOT_EXIST);
+        }
+        Order order = orderMapper.selectOne(new LambdaQueryWrapper<Order>()
+                .eq(Order::getUserId, userId)
+                .eq(Order::getOrderNo, orderNo));
+        if (order == null) {
+            throw new BusinessException(ResultCode.ORDER_NOT_EXIST);
+        }
         return R.ok(order);
     }
 
@@ -206,7 +239,8 @@ public class OrderServiceImpl implements OrderService {
         int count = 0;
         for (Order order : expiredOrders) {
             try {
-                if (doCancelOrder(order)) {
+                TransactionTemplate tx = new TransactionTemplate(transactionManager);
+                if (Boolean.TRUE.equals(tx.execute(status -> doCancelOrder(order)))) {
                     count++;
                     log.info("DB fallback cancelled expired order: orderNo={}", order.getOrderNo());
                 }
@@ -268,8 +302,8 @@ public class OrderServiceImpl implements OrderService {
         List<OrderItem> items = orderItemMapper.selectList(new LambdaQueryWrapper<OrderItem>().eq(OrderItem::getOrderId, orderId));
         List<Long> productIds = items.stream().map(OrderItem::getProductId).collect(Collectors.toList());
         Set<Long> sellerProductIds = loadSellerProductIds(sellerId);
-        if (productIds.stream().noneMatch(sellerProductIds::contains)) {
-            throw new BusinessException("该订单不包含您的商品");
+        if (productIds.isEmpty() || !sellerProductIds.containsAll(productIds)) {
+            throw new BusinessException("仅可对全部商品均属于您的订单执行整单发货");
         }
 
         int rows = orderMapper.update(null, new LambdaUpdateWrapper<Order>()
@@ -315,15 +349,16 @@ public class OrderServiceImpl implements OrderService {
             throw new BusinessException("下单令牌不能为空");
         }
         String tokenKey = "cloud:order:token:" + userId;
-        DefaultRedisScript<String> script = new DefaultRedisScript<>(
-                "local v = redis.call('GET', KEYS[1]) if v then redis.call('DEL', KEYS[1]) end return v",
-                String.class);
-        String storedToken = redisTemplate.execute(script, Collections.singletonList(tokenKey));
-        if (storedToken == null) {
+        Long result = redisTemplate.execute(
+                CONSUME_ORDER_TOKEN_SCRIPT, Collections.singletonList(tokenKey), orderToken);
+        if (result == null || result == -1L) {
             throw new BusinessException("请勿重复提交订单");
         }
-        if (!storedToken.equals(orderToken)) {
+        if (result == 0L) {
             throw new BusinessException("下单令牌无效");
+        }
+        if (result != 1L) {
+            throw new BusinessException("下单令牌校验失败");
         }
     }
 
@@ -340,20 +375,38 @@ public class OrderServiceImpl implements OrderService {
     }
 
     private void fillAddress(Long userId, Long addressId, Order order) {
-        if (addressId == null) {
-            return;
+        if (addressId == null || addressId <= 0) {
+            throw new BusinessException("请选择有效的收货地址");
         }
-        R<Map<String, Object>> addressResult = userFeignClient.getAddressById(userId, addressId);
-        if (addressResult.getCode() == 200 && addressResult.getData() != null) {
-            Map<String, Object> addr = addressResult.getData();
-            order.setReceiverName((String) addr.get("receiverName"));
-            order.setReceiverPhone((String) addr.get("phone"));
-            String fullAddress = Objects.toString(addr.get("province"), "")
-                    + Objects.toString(addr.get("city"), "")
-                    + Objects.toString(addr.get("district"), "")
-                    + Objects.toString(addr.get("detail"), "");
-            order.setReceiverAddress(fullAddress);
+        R<Map<String, Object>> addressResult;
+        try {
+            addressResult = userFeignClient.getAddressById(userId, addressId);
+        } catch (Exception e) {
+            throw new BusinessException("收货地址查询失败，请稍后重试");
         }
+        if (addressResult == null || addressResult.getCode() != 200 || addressResult.getData() == null) {
+            throw new BusinessException("收货地址不存在或暂时无法使用");
+        }
+        Map<String, Object> addr = addressResult.getData();
+        if (userId == null || !userId.toString().equals(Objects.toString(addr.get("userId"), ""))) {
+            throw new BusinessException("收货地址不属于当前用户");
+        }
+        String receiverName = requiredAddressText(addr, "receiverName");
+        String phone = requiredAddressText(addr, "phone");
+        String detail = requiredAddressText(addr, "detail");
+        order.setReceiverName(receiverName);
+        order.setReceiverPhone(phone);
+        order.setReceiverAddress(Objects.toString(addr.get("province"), "")
+                + Objects.toString(addr.get("city"), "")
+                + Objects.toString(addr.get("district"), "") + detail);
+    }
+
+    private String requiredAddressText(Map<String, Object> address, String field) {
+        Object value = address.get(field);
+        if (!(value instanceof String text) || text.isBlank()) {
+            throw new BusinessException("收货地址信息不完整，请完善姓名、电话和详细地址");
+        }
+        return text.trim();
     }
 
     private void saveOrderAndItems(Order order, List<OrderItem> orderItems) {
@@ -386,7 +439,11 @@ public class OrderServiceImpl implements OrderService {
                     }
                 }
                 long expireTime = System.currentTimeMillis() + ORDER_TIMEOUT_MINUTES * 60 * 1000;
-                redisTemplate.opsForZSet().add("cloud:order:timeout", orderNo, expireTime);
+                try {
+                    redisTemplate.opsForZSet().add("cloud:order:timeout", orderNo, expireTime);
+                } catch (Exception e) {
+                    log.warn("Order committed; timeout will use database fallback: orderNo={}", orderNo, e);
+                }
             }
         });
     }
@@ -394,10 +451,18 @@ public class OrderServiceImpl implements OrderService {
     private void rollbackDeductedStock(String orderNo, List<CartItemDTO> deductedItems) {
         for (CartItemDTO item : deductedItems) {
             try {
-                productFeignClient.restoreStock(item.getProductId(), item.getQuantity(), internalToken);
+                R<String> result = productFeignClient.restoreStock(item.getProductId(), item.getQuantity(), orderNo, internalToken);
+                if (result == null || result.getCode() != 200) {
+                    throw new IllegalStateException("库存回补未成功");
+                }
             } catch (Exception ex) {
                 log.error("Restore deducted stock failed, enqueue compensation: productId={}", item.getProductId(), ex);
-                enqueueStockRestore(orderNo, null, item.getProductId(), item.getQuantity());
+                try {
+                    enqueueStockRestore(orderNo, null, item.getProductId(), item.getQuantity());
+                } catch (Exception persistenceFailure) {
+                    log.error("CRITICAL: stock compensation not persisted: orderNo={}, productId={}",
+                            orderNo, item.getProductId(), persistenceFailure);
+                }
             }
         }
     }
@@ -417,28 +482,36 @@ public class OrderServiceImpl implements OrderService {
     private void restoreStockAndCleanup(Order order) {
         List<OrderItem> items = orderItemMapper.selectList(new LambdaQueryWrapper<OrderItem>().eq(OrderItem::getOrderId, order.getId()));
         for (OrderItem item : items) {
-            try {
-                productFeignClient.restoreStock(item.getProductId(), item.getQuantity(), internalToken);
-            } catch (Exception e) {
-                log.error("Restore stock failed, enqueue compensation: orderNo={}, productId={}", order.getOrderNo(), item.getProductId(), e);
-                enqueueStockRestore(order.getOrderNo(), order.getId(), item.getProductId(), item.getQuantity());
-            }
+            saveStockRestoreMessage(order.getOrderNo(), order.getId(), item.getProductId(), item.getQuantity());
         }
-        redisTemplate.opsForZSet().remove("cloud:order:timeout", order.getOrderNo());
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                try {
+                    redisTemplate.opsForZSet().remove("cloud:order:timeout", order.getOrderNo());
+                } catch (Exception e) {
+                    log.warn("Cancelled order timeout cleanup deferred: orderNo={}", order.getOrderNo(), e);
+                }
+            }
+        });
     }
 
     private void enqueueStockRestore(String orderNo, Long orderId, Long productId, Integer quantity) {
+        TransactionTemplate tx = new TransactionTemplate(transactionManager);
+        tx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        tx.executeWithoutResult(status -> saveStockRestoreMessage(orderNo, orderId, productId, quantity));
+    }
+
+    private void saveStockRestoreMessage(String orderNo, Long orderId, Long productId, Integer quantity) {
         JSONObject restoreMsg = new JSONObject();
         restoreMsg.put("orderNo", orderNo);
         restoreMsg.put("orderId", orderId);
         restoreMsg.put("productId", productId);
         restoreMsg.put("quantity", quantity);
         restoreMsg.put("idempotencyKey", orderNo + ":" + productId);
-        TransactionTemplate tx = new TransactionTemplate(transactionManager);
-        tx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
-        tx.executeWithoutResult(status -> outboxService.saveMessage(SystemConstants.KAFKA_TOPIC_STOCK_RESTORE,
+        outboxService.saveMessage(SystemConstants.KAFKA_TOPIC_STOCK_RESTORE,
                 orderNo + ":" + productId,
-                restoreMsg.toJSONString()));
+                restoreMsg.toJSONString());
     }
 
     private Set<Long> loadSellerProductIds(Long sellerId) {

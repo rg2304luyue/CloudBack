@@ -63,17 +63,19 @@ public class ProductController {
     @PostMapping("/{id}/stock/deduct")
     public R<String> deductStock(@PathVariable Long id,
                                  @RequestParam Integer quantity,
+                                 @RequestParam String orderNo,
                                  @RequestHeader(SystemConstants.INTERNAL_TOKEN_HEADER) String token) {
         checkInternalToken(token);
-        return productService.deductStock(id, quantity);
+        return productService.deductStock(id, quantity, orderNo);
     }
 
     @PostMapping("/{id}/stock/restore")
     public R<String> restoreStock(@PathVariable Long id,
                                   @RequestParam Integer quantity,
+                                  @RequestParam String orderNo,
                                   @RequestHeader(SystemConstants.INTERNAL_TOKEN_HEADER) String token) {
         checkInternalToken(token);
-        return productService.restoreStock(id, quantity);
+        return productService.restoreStock(id, quantity, orderNo);
     }
 
     @GetMapping("/seller")
