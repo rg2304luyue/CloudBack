@@ -16,14 +16,19 @@ Spring Cloud Alibaba 微服务架构，8 个模块，三种角色（买家/卖�
 | ORM | MyBatis-Plus | 3.5.11 |
 | 连接池 | Druid | 1.2.24 |
 | 缓存 | Redis | 7.x (宿主机) |
-| 本地缓存 | Caffeine | 3.1.8 |
+| 本地缓存 | Caffeine | 3.1.8（版本由 Spring Boot 父 POM 管理） |
 | 消息队列 | Kafka | 3.9.x (Docker) |
 | 对象存储 | MinIO | latest (Docker) |
 | 熔断限流 | Sentinel | 1.8.x (Docker，当前仅接入 dashboard，未配置规则) |
 | 远程调用 | OpenFeign + LoadBalancer | — |
 | 搜索引擎 | Meilisearch | 1.10 (Docker) |
 | 第三方支付 | 支付宝 SDK (alipay-sdk-java) | 4.40.806.ALL |
+| 分布式锁 / 布隆过滤器 | Redisson | — |
+| 接口文档 | Knife4j | 4.5.0（除 gateway 外各服务 `knife4j.enable: true`） |
+| 数据库驱动 | mysql-connector-j | 9.1.0 |
 | 工具 | Hutool、Fastjson2、Lombok | — |
+
+项目只使用 Kafka 作为消息队列，没有 RocketMQ / Seata。
 
 ---
 
@@ -32,8 +37,9 @@ Spring Cloud Alibaba 微服务架构，8 个模块，三种角色（买家/卖�
 ```text
 CloudBack/
 ├── pom.xml                     # 父 POM，统一依赖版本管理
-├── .env                        # 环境变量（VM_HOST 等，启动时自动加载）
-├── start-all.bat               # Windows 一键启动：mvn install → 7 个后端 → 前端 preview(4173)
+├── .env                        # 环境变量（VM_HOST 等，启动时自动加载；不入库，模板为 .env.example）
+├── .mvn/wrapper/ + mvnw(.cmd)  # Maven Wrapper（Maven 3.9.15）
+├── start-all.bat               # Windows 一键启动：mvn clean install -DskipTests → 7 个后端 → 前端 npm run preview(4173)
 │
 ├── cloud-common/               # 公共模块（被所有模块依赖，不独立部署）
 │   └── src/main/java/org/cloudback/common/
@@ -124,8 +130,10 @@ CloudBack/
 │       ├── model/entity/Payment.java
 │       └── mapper/PaymentMapper.java
 │
-├── sql/init.sql                # 基础表 DDL（未含 order_request / inventory_operation，见 sql/migrations/ 人工迁移）
-└── docker/                     # Docker Compose（Nacos、Kafka、Sentinel、MinIO、Meilisearch）
+├── sql/
+│   ├── init.sql                # 基础表 DDL（不含 order_request / inventory_operation / seller_application，且不能直接在新库整体执行，见「部署」）
+│   └── migrations/             # 20260907_inventory_operation.sql、20260910_order_request.sql(+ .md 说明)、README.md
+└── docker/                     # Docker Compose（Nacos、Kafka、kafka-ui、Sentinel、MinIO、Meilisearch）+ nacos/conf
 ```
 
 ### 端口分配
@@ -168,7 +176,7 @@ Gateway 白名单（方法+路径精确匹配）之外的请求强制携带有�
 
 ## cloud-common 公共模块详解
 
-被所有模块依赖，不独立部署（`spring-boot-maven-plugin` 跳过）。条件化配置：MySQL/MyBatis-Plus/Redis 仅在引入对应依赖的模块中生效。
+被所有模块依赖，不独立部署（`spring-boot-maven-plugin` 跳过）。MyBatis-Plus、MySQL、Druid、Redisson、Meilisearch、feign-core 在 `cloud-common/pom.xml` 中是 optional 依赖，只在显式引入的模块中生效；`spring-boot-starter-data-redis` 不是 optional，所有模块（包括 gateway、auth）的 classpath 上都有 Redis。
 
 ### 核心类
 
@@ -198,7 +206,7 @@ Gateway 白名单（方法+路径精确匹配）之外的请求强制携带有�
 | `JacksonConfig` | `Long` → `String`，防止前端 JS 精度丢失雪花 ID |
 | `DotenvEnvironmentPostProcessor` | Spring 启动前加载 `.env` 文件到 Environment，支持 `${VAR}` 引用 |
 | `MinioConfig` | 创建 `MinioClient` Bean，自动初始化 Bucket 并设置公开读策略；`@ConditionalOnProperty` 确保只在配置了 `minio.endpoint` 的模块中加载 |
-| `CaffeineConfig` | 创建 4 个 Caffeine Cache 实例（商品详情/热门/ID列表/购物车），并组装对应的 `TwoLevelCacheService` Bean；`@ConditionalOnClass(RedisTemplate.class)` 确保 gateway/auth 等无 Redis 依赖的模块自动跳过 |
+| `CaffeineConfig` | 创建 4 个 Caffeine Cache 实例（商品详情/热门/ID列表/购物车），并组装对应的 `TwoLevelCacheService` Bean；标注了 `@ConditionalOnClass(RedisTemplate.class)`，但由于 Redis starter 被所有模块继承，该条件实际总是成立 |
 | `TwoLevelCacheService` | 通用二级缓存服务：L1(Caffeine 30s)→L2(Redis)→DB，Redis 故障自动降级；提供 `get()` 穿透读取和 `evict()` 双删（先 Redis 后 Caffeine） |
 | `CommonAutoConfiguration` | `@ComponentScan("org.cloudback.common")`，使 `FileService` 等 `@Service` 组件能被所有依赖 cloud-common 的模块自动发现 |
 | `FileService` | MinIO 文件上传服务，封装 `putObject` 逻辑，按 prefix 分目录存储（avatar/product），`@ConditionalOnBean(MinioClient.class)` 确保仅在配置了 MinIO 的模块中加载 |
@@ -247,6 +255,7 @@ Gateway 白名单（方法+路径精确匹配）之外的请求强制携带有�
     POST /payment/notify/alipay、GET /payment/return/alipay、
     GET /products、GET /products/{id}（纯数字）、GET /products/hot、
     GET /products/search、GET /products/suggest、GET /categories）
+   注：GET /auth/health 在白名单中，但 AuthController 没有对应接口，请求会返回 404
    → 命中：剥离 X-User-Id、X-Username、X-User-Role、X-Internal-Token 后直接放行（不解析 JWT）
 2. 提取 Authorization: Bearer <token> 头
    → 缺失或格式不正确：返回 401 JSON
@@ -275,6 +284,8 @@ spring.cloud.gateway.routes:
   - /api/payment/**          → lb://cloud-payment
 ```
 
+此外 `spring.cloud.gateway.discovery.locator.enabled: true`（小写服务名），网关还会暴露 `/cloud-order/**`、`/cloud-product/**` 这类按服务名的路由。它们同样经过 `AuthGlobalFilter`（需要 JWT，且会剥离 `X-Internal-Token`），但不在上面的显式路由表中。gateway 还引入了 `spring-cloud-alibaba-sentinel-gateway`。
+
 CORS 通过 `CorsConfig`（WebFlux `CorsWebFilter`）全局允许所有来源。
 
 ### OpenFeign 远程调用
@@ -299,12 +310,13 @@ cloud-order 下单成功（事务提交后）
     → 创建待支付记录（status=0）—— 不再自动标记支付成功
     → 等待用户手动发起支付宝页面支付
 
-用户点击"立即支付" → POST /api/payment/alipay (JSON body: {orderNo})
+用户点击"立即支付" → POST /api/payment/alipay (JSON body: {orderNo, method})
   → 后端生成支付宝页面支付表单 → 前端新窗口打开 → 跳转支付宝
   → 用户完成付款 → 支付宝异步通知 POST /api/payment/notify/alipay
-    → 验签 → 更新 payment.status=1 → Kafka "payment-result"
-    OR 支付宝同步回跳 GET /api/payment/return/alipay
-    → 主动查询支付宝交易状态 → 确认已付 → 同上更新
+    → 验签 → 更新 payment.status=1 → Outbox → Kafka "payment-result"
+    OR 浏览器回跳前端 /payment/result（默认 return_url）
+    → 前端轮询 GET /api/payment/{orderNo} → 后端主动查询支付宝 → 确认已付 → 同上更新
+    （GET /api/payment/return/alipay 只有在 ALIPAY_RETURN_URL 指向网关时才会被调用）
   → cloud-order.PaymentResultConsumer 消费 "payment-result"
     → UPDATE order_info.status = 已支付, pay_time = now()
 
@@ -400,7 +412,7 @@ GET /api/products/suggest?keyword=
   1. Feign → ProductService.getProductDetail(productId) 获取商品名/图/价
   2. Redisson RLock 加锁（cloud:cart:{userId}:lock, TTL 5s）
   3. 从 Redis Hash 检查是否已有该 productId
-     → 已有：累加 quantity，更新 name/image/price（保证最新）
+     → 已有：累加 quantity，更新 name/image/price（保证最新），并重新置 checked = true
      → 没有：创建新 CartItem，checked 默认 true
   4. HSET + EXPIRE 续期 7 天
   5. evict 读缓存（锁内，两个 key）→ 解锁
@@ -414,7 +426,7 @@ GET /api/products/suggest?keyword=
 全选/取消全选 PATCH /api/cart/items/check-all (JSON body: {checked})
   → Redisson RLock → HGETALL → 遍历所有商品修改 checked → 批量 HSET → evict 读缓存（锁内）→ 解锁
 
-获取购物车 GET /api/cart/list
+获取购物车 GET /api/cart
   → L1 → L2 → HGETALL → 回填 L1+L2
 
 获取勾选商品 GET /api/cart/checked
@@ -494,13 +506,17 @@ Step 4: 客户端确认（GET /api/orders/requests/{token}）
      - subject = "CloudMall订单-{orderNo}"
      - product_code = FAST_INSTANT_TRADE_PAY
      - notify_url = 异步通知地址（网关 /api/payment/notify/alipay）
-     - return_url = 同步回跳地址（前端 /payment/result）
+     - return_url = 同步回跳地址（ALIPAY_RETURN_URL，默认前端 /payment/result）+ `?orderNo=`
+     - timeout_express = 30m
   3. alipayClient.pageExecute() → 返回支付表单 HTML
+     （支付宝返回 TRADE_HAS_SUCCESS 时改为同步本地支付状态）
   4. 前端将 HTML 写入新窗口 → 表单自动提交 → 跳转支付宝收银台
 
 用户在支付宝完成付款:
 
   同步回跳（浏览器）:
+    默认 return_url 是前端 /payment/result，由前端轮询 GET /api/payment/{orderNo} 触发同步。
+    仅当 ALIPAY_RETURN_URL 配置为网关地址时才走下面的后端回跳接口：
     GET /api/payment/return/alipay?out_trade_no=xxx&trade_no=xxx&...
     → 提取 orderNo → syncPaymentStatus()（主动向支付宝查询最新状态并同步）
       → 返回 TRADE_SUCCESS → 更新 payment.status=1, tradeNo, payTime
@@ -509,8 +525,9 @@ Step 4: 客户端确认（GET /api/orders/requests/{token}）
   异步通知（服务端，需公网可达）:
     POST /api/payment/notify/alipay
     → 验签（AlipaySignature.rsaCheckV1, RSA2）+ 校验 app_id + 校验支付金额
-    → trade_status == TRADE_SUCCESS → 同上更新本地状态 → 返回 "success"
+    → trade_status == TRADE_SUCCESS 或 TRADE_FINISHED → 同上更新本地状态 → 返回 "success"
     → trade_status == TRADE_CLOSED → 标记支付失败（status=2）
+    → 本地无支付记录、app_id 或金额不匹配、状态无法处理 → 返回 "failure"
 
 cloud-order 消费 payment-result:
   1. status == "SUCCESS" 且 order 为 UNPAID
@@ -522,7 +539,7 @@ cloud-order 消费 payment-result:
   若本地记录仍为待支付 → 30秒内只查一次支付宝 API（防频率限制）
   → 前端支付结果页依赖此行为轮询确认支付结果
 
-**支付-取消竞态保护**：PaymentResultConsumer 在条件 UPDATE 返回 0 行时，检测订单是否已被取消。若已取消则 log.error 告警（需人工处理退款），避免用户付费后订单仍被取消。标记支付成功时通过 Outbox 可靠发送 Kafka 通知。
+**支付-取消竞态保护**：PaymentResultConsumer 在条件 UPDATE 返回 0 行时，检测订单是否已被取消。若已取消则 log.error 告警，并把订单 remark 写为 `[需退款] 支付成功但订单已取消, tradeNo=...`，等待人工退款（系统不会自动退款）。标记支付成功时通过 Outbox 可靠发送 Kafka 通知。
 ```
 
 **支付宝配置**：沙箱网关 `openapi-sandbox.dl.alipaydev.com`，RSA2 签名，公钥模式。密钥通过 `.env` 注入，单行 PKCS8 格式。应用私钥和支付宝公钥均不含 `----BEGIN/END----` 标记。
@@ -749,7 +766,7 @@ PATCH /api/admin/users/{id}/password (JSON body: {newPassword})
 | POST | `/api/seller/products` | product | 是 | 添加商品（JSON body，SELLER/ADMIN） |
 | PUT | `/api/seller/products/{id}` | product | 是 | 修改商品（JSON body，id 在 URL） |
 | DELETE | `/api/seller/products/{id}` | product | 是 | 删除商品 |
-| GET | `/api/admin/products/pending` | product | 是 | 管理员-待审核商品 |
+| GET | `/api/admin/products/pending` | product | 是(ADMIN) | 管理员-待审核商品（query: page=1, size=20） |
 | PATCH | `/api/admin/products/{id}/review` | product | 是 | 管理员-审批商品（JSON body: approved） |
 | POST | `/api/products/upload` | product | 是 | 上传商品图片到 MinIO |
 | POST | `/api/products/{id}/stock/deduct` | product | 内部 | Feign 原子扣库存（需 X-Internal-Token，WHERE stock >= ? AND status = 1） |
@@ -770,16 +787,16 @@ PATCH /api/admin/users/{id}/password (JSON body: {newPassword})
 | GET | `/api/orders/by-no/{orderNo}` | order | 是 | 按订单号查询当前用户订单（支付结果页核对） |
 | PATCH | `/api/orders/{id}/cancel` | order | 是 | 取消订单（同时回滚库存） |
 | PATCH | `/api/orders/{id}/receive` | order | 是 | 确认收货（已发货 → 已完成） |
-| GET | `/api/seller/orders` | order | 是 | 卖家查看包含自己商品的订单 |
-| PATCH | `/api/seller/orders/{id}/ship` | order | 是 | 卖家发货（已支付 → 已发货） |
+| GET | `/api/seller/orders` | order | 是 | 卖家查看包含自己商品的订单（接口本身不校验角色，只按 X-User-Id 过滤） |
+| PATCH | `/api/seller/orders/{id}/ship` | order | 是 | 卖家发货（已支付 → 已发货）；不校验角色，要求订单内所有商品都属于当前用户 |
 | GET | `/api/orders/admin/outbox/failed` | order | 是(ADMIN) | 失败 Outbox 消息列表（limit 默认 50） |
 | POST | `/api/orders/admin/outbox/{id}/retry` | order | 是(ADMIN) | 重放失败 Outbox 消息 |
-| GET | `/api/products/seller?sellerId=` | product | 内部 | Feign 按卖家 ID 获取商品列表（query 参数） |
-| POST | `/api/payment/alipay` | payment | 是 | 发起支付（JSON body: orderNo） |
+| GET | `/api/products/seller?sellerId=` | product | 是 | 供 Feign 按卖家 ID 查商品（返回商品 ID 等）；**不校验 X-Internal-Token，任何已登录用户都能调用** |
+| POST | `/api/payment/alipay` | payment | 是 | 发起支付（JSON body: orderNo, method），返回支付表单 HTML |
 | GET | `/api/payment/{orderNo}` | payment | 是 | 查询支付记录（待支付时自动同步支付宝状态） |
 | POST | `/api/payment/{orderNo}/sync` | payment | 是 | 主动向支付宝查询并同步支付状态 |
 | POST | `/api/payment/notify/alipay` | payment | 否 | 支付宝异步通知回调 |
-| GET | `/api/payment/return/alipay` | payment | 否 | 支付宝同步回跳（查支付→跳前端） |
+| GET | `/api/payment/return/alipay` | payment | 否 | 支付宝同步回跳（查支付→跳前端）；默认配置下不会被调用，且同步时不做用户归属校验 |
 
 ---
 
@@ -806,7 +823,7 @@ order_info ──< payment
 | `address` | id, user_id, receiver_name, phone, province, city, district, detail, is_default | idx_user_id |
 | `category` | id, parent_id, name, sort | idx_parent_id |
 | `product` | id, category_id, seller_id, name, price, stock, sales, status | idx_category_id, idx_status, idx_seller_id |
-| `seller_application` | id, user_id, status(PENDING/APPROVED/REJECTED) | idx_user_id |
+| `seller_application` | id, user_id, status(PENDING/APPROVED/REJECTED) | idx_user_id（**init.sql 中该建表语句被注释，新库需手动取消注释执行**） |
 | `order_info` | id, order_no(UK), user_id, total_amount, status(0-4), receiver_* | uk_order_no, idx_user_id, idx_status |
 | `order_item` | id, order_id, order_no, product_id, product_name, price, quantity, total_amount | idx_order_id, idx_order_no |
 | `payment` | id, order_no, user_id, amount, pay_method, trade_no, status, last_sync_time | idx_order_no, idx_user_id |
@@ -861,18 +878,23 @@ order_info ──< payment
 项目根目录 `.env` 文件，支持 `${KEY}` 引用：
 
 ```ini
-VM_HOST=192.168.91.130
+VM_HOST=<虚拟机IP>
 MYSQL_ADDR=${VM_HOST}:3306
+MYSQL_USER=<mysql用户>
+MYSQL_PASSWORD=<mysql密码>
 REDIS_ADDR=${VM_HOST}
+REDIS_PORT=6379
+REDIS_PASSWORD=<redis密码>
 NACOS_ADDR=${VM_HOST}:8848
+# NACOS_NAMESPACE=<可选，仅 gateway 读取>
 SENTINEL_ADDR=${VM_HOST}:8858
 KAFKA_ADDR=${VM_HOST}:9092
 # JWT 密钥（至少 32 字符，缺失或过短启动失败）
 JWT_SECRET=<your-secret>
 # MinIO 对象存储
 MINIO_ENDPOINT=${VM_HOST}:9000
-MINIO_ACCESS_KEY=admin
-MINIO_SECRET_KEY=admin123456
+MINIO_ACCESS_KEY=<minio-access-key>
+MINIO_SECRET_KEY=<minio-secret-key>
 MINIO_BUCKET=cloudmall-products
 # Meilisearch 搜索引擎
 MEILI_HOST=${VM_HOST}
@@ -881,7 +903,7 @@ MEILI_MASTER_KEY=<your-master-key>
 # 内部调用令牌（cloud-product / cloud-order 必填）
 CLOUD_INTERNAL_TOKEN=<high-entropy-shared-value>
 # 支付宝沙箱
-ALIPAY_APP_ID=2021000148684222
+ALIPAY_APP_ID=<支付宝沙箱AppID>
 ALIPAY_PRIVATE_KEY=<PKCS8应用私钥单行>
 ALIPAY_PUBLIC_KEY=<支付宝公钥单行>
 ALIPAY_GATEWAY=https://openapi-sandbox.dl.alipaydev.com/gateway.do
@@ -891,7 +913,14 @@ ALIPAY_RETURN_URL=http://localhost:4173/payment/result
 ALIPAY_FRONTEND_URL=http://localhost:4173
 ```
 
-`DotenvEnvironmentPostProcessor` 启动时自动从工作目录向上查找 `.env`（最多 5 层），解析后注入 Spring Environment。
+`DotenvEnvironmentPostProcessor` 启动时自动从工作目录向上查找 `.env`（最多 5 层），解析后以**最低优先级**注入 Spring Environment：同名的操作系统环境变量、命令行参数会覆盖 `.env` 中的值。完整键列表以 `.env.example` 为准。
+
+注意：
+- `cloud-product` 用到 Redis（浏览量、缓存、Redisson），但它的 `application.yml` 没有 `spring.data.redis` 配置，会回退到 `localhost:6379`、无密码。只有 cart 和 order 读取 `REDIS_ADDR / REDIS_PORT / REDIS_PASSWORD`。Redis 不在本机时需要给 product 补上配置。
+- 部分 yml 为 MySQL、Redis、MinIO、Meilisearch 写了弱默认值，生产环境必须通过 `.env` 或环境变量覆盖。
+- 所有服务都有 `nacos.config` 配置块，但没有 `spring.config.import`，配置中心实际未启用；各服务均开启 `sentinel.eager: true`。
+- Kafka：消费者组 `order-consumer-group`、`payment-consumer-group`，JSON 序列化；Docker 中为单节点 KRaft，自动建 Topic，`KAFKA_HOST` 决定对外通告地址。kafka-ui 映射到宿主机 8088。
+- Docker 中的 Nacos 开启了鉴权，使用 MySQL 库 `nacos_config`（`init.sql` 只建空库，Nacos 自身的表结构需按 Nacos 官方脚本初始化），服务端配置挂载自 `docker/nacos/conf/application.properties`。
 
 ---
 
@@ -922,7 +951,7 @@ CloudBack/.claude/
 
 ---
 
-## 稳定性改进记录（2026-06）
+## 稳定性改进记录（2026-06 起，部分条目已按 2026-09 的 order_request 重构更新）
 
 ### 数据正确性
 - **分页 total 修复**：Meilisearch 搜索结果总数改用 `rawSearch` 解析 `estimatedTotalHits`，修复分页仅显示一页的 Bug
@@ -988,6 +1017,13 @@ CloudBack/.claude/
 sudo apt install mysql-server redis-server
 
 # 初始化基础表（init.sql 未包含 order_request / inventory_operation）
+# ⚠ 不要在新库上直接整体执行 init.sql：
+#   CREATE TABLE user / product 已包含 role、seller_id 和 idx_seller_id，
+#   后面的 ALTER TABLE ... ADD COLUMN role / seller_id、CREATE INDEX idx_seller_id 会因重复而报错，
+#   mysql 客户端遇错即停，导致 outbox_message 表和 payment.last_sync_time 列都不会创建；
+#   seller_application 的建表语句也被注释掉了。
+# 新库做法：先把 init.sql 中第 147~149 行这组兼容旧库的 ALTER/CREATE INDEX 注释掉，
+#   并取消 seller_application 建表语句的注释，再执行：
 mysql -u root -p < sql/init.sql
 
 # 人工执行迁移（停机 + 备份，详见 sql/migrations/README.md 与 sql/migrations/20260910_order_request.md）
@@ -1010,18 +1046,38 @@ cd docker && docker compose up -d
 cp .env.example .env
 # 编辑 .env → VM_HOST 设为虚拟机 IP
 
-# 2. 编译
+# 2. 编译（也可用 .\mvnw.cmd 代替 mvn）
 mvn clean install -DskipTests
 
-# 3. 依次启动（或双击 start-all.bat）
+# 3. 依次启动（或双击 start-all.bat，它按下面的顺序在独立窗口中启动）
 mvn spring-boot:run -pl cloud-gateway
 mvn spring-boot:run -pl cloud-auth
-mvn spring-boot:run -pl cloud-product
 mvn spring-boot:run -pl cloud-user
+mvn spring-boot:run -pl cloud-product
+#   start-all.bat 在这里等待 15 秒
 mvn spring-boot:run -pl cloud-cart
 mvn spring-boot:run -pl cloud-order
 mvn spring-boot:run -pl cloud-payment
+#   start-all.bat 再等待 10 秒后，在 ..\CloudFront 执行 npm run preview（http://localhost:4173）
 ```
+
+`start-all.bat` 使用系统 `mvn`，不是 Maven Wrapper。
+
+### 测试
+
+单元测试只在 cloud-product、cloud-order、cloud-payment 中（这三个模块引入了 `spring-boot-starter-test`），共 6 个测试类：
+
+| 模块 | 测试类 |
+|---|---|
+| cloud-order | `OrderRequestServiceTest`、`OrderServiceRegressionTest`、`StockRestoreConsumerTest` |
+| cloud-product | `InventoryOperationTest` |
+| cloud-payment | `PaymentServiceImplTest`、`PaymentReconciliationSchedulerTest` |
+
+```bash
+mvn test -pl cloud-order,cloud-product,cloud-payment -am
+```
+
+上面的构建命令都带 `-DskipTests`，默认不会跑测试。
 
 ---
 
@@ -1038,10 +1094,13 @@ mvn spring-boot:run -pl cloud-payment
 
 | 现象 | 原因 | 解决 |
 |---|---|---|
-| Gateway 连 localhost 而非 VM IP | `.env` 未加载 | `mvn clean install -DskipTests` 后重启 |
+| Gateway 连 localhost 而非 VM IP | `.env` 未加载 | 确认启动时的工作目录在 `.env` 所在目录或其下 5 层以内，并且没有同名系统环境变量覆盖 |
 | Nacos 9848 端口连不上 | 防火墙未放行 gRPC 端口 | `sudo ufw allow 9848/tcp` |
-| Nacos 客户端解析到 localhost | Docker 通告了容器内网 IP | Nacos `spring.cloud.nacos.discovery.ip` 配置 |
+| Nacos 客户端解析到 localhost | Docker 通告了容器内网 IP | 服务端在 `docker/nacos/conf/application.properties` 设置 `nacos.inetutils.ip-address` 为虚拟机 IP；客户端可按需设置 `spring.cloud.nacos.discovery.ip`（当前 yml 未配置） |
 | Redis 连接被拒 | Redis 只监听 127.0.0.1 | 改 `bind 0.0.0.0` 并设 `requirepass` |
+| 执行 init.sql 报 Duplicate column / Duplicate key name，之后缺少 outbox_message 表 | 新库上兼容旧库的 ALTER 语句与 CREATE TABLE 重复，mysql 遇错即停 | 按「部署」一节注释掉重复语句后重新执行 |
+| 申请成为卖家报表不存在 | init.sql 中 seller_application 建表语句被注释 | 取消注释后单独执行该建表语句 |
+| cloud-product 连不上 Redis | product 的 yml 未配置 spring.data.redis，默认连 localhost | 在 product 的 application.yml 中补充与 cart/order 相同的 Redis 配置 |
 | 审批显示"申请不存在" | JS 精度丢失 Snowflake ID | JacksonConfig 已处理 Long→String |
 | 新增商品报 JSON 错误 | `images` 字段为空字符串 `""` | 前端发 `null` 或有效 JSON 数组 |
 | 改角色后仍报权限错误 | JWT 仍是旧角色 | 退出重新登录获取新 token |
@@ -1087,7 +1146,7 @@ For an already-paid order that still appears unpaid, restart the payment service
 
 ### Existing database check
 
-The scheduler requires payment.last_sync_time. New databases receive it from sql/init.sql, but existing databases must be checked before deployment:
+The scheduler requires payment.last_sync_time. It is defined near the end of sql/init.sql, but running init.sql unmodified on a fresh database stops earlier with duplicate-column errors (see 部署), so check both new and existing databases before deployment:
 
     SHOW COLUMNS FROM payment LIKE 'last_sync_time';
     SHOW INDEX FROM payment WHERE Column_name = 'order_no';
