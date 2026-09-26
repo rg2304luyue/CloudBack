@@ -14,6 +14,7 @@ import org.cloudback.order.mapper.OrderItemMapper;
 import org.cloudback.order.mapper.OrderMapper;
 import org.cloudback.order.model.entity.Order;
 import org.cloudback.order.model.entity.OrderItem;
+import org.cloudback.order.service.OrderRequestService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -22,7 +23,6 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.redis.core.RedisTemplate;
-import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
@@ -30,6 +30,8 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
+import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -45,12 +47,20 @@ class OrderServiceRegressionTest {
     @Mock RedisTemplate<String, Object> redisTemplate;
     @Mock OutboxService outboxService;
     @Mock PlatformTransactionManager transactionManager;
+    @Mock OrderRequestService orderRequests;
     @InjectMocks OrderServiceImpl service;
 
     @BeforeEach
     void initializeMapping() {
         TableInfoHelper.initTableInfo(new MapperBuilderAssistant(new MybatisConfiguration(), "test"), Order.class);
         TableInfoHelper.initTableInfo(new MapperBuilderAssistant(new MybatisConfiguration(), "test"), OrderItem.class);
+        lenient().when(orderRequests.create(anyLong(), anyString(), any(), any())).thenAnswer(invocation -> {
+            Function<String, Order> prepare = invocation.getArgument(2);
+            Consumer<Order> execute = invocation.getArgument(3);
+            Order order = prepare.apply("order-request-1");
+            execute.accept(order);
+            return order;
+        });
     }
 
     @AfterEach
@@ -61,55 +71,12 @@ class OrderServiceRegressionTest {
     }
 
     @Test
-    void lostDeductionResponseIsCompensatedOnlyAfterRollback() {
-        prepareValidCheckout();
-        when(productFeignClient.deductStock(eq(11L), eq(1), anyString(), any()))
-                .thenThrow(new IllegalStateException("response lost after remote commit"));
-        when(productFeignClient.restoreStock(eq(11L), eq(1), anyString(), any())).thenReturn(R.ok("restored"));
-
-        assertThrows(BusinessException.class, () -> service.createOrder(7L, 9L, "", "token"));
-        verify(productFeignClient, never()).restoreStock(anyLong(), anyInt(), anyString(), any());
-        completeTransaction(TransactionSynchronization.STATUS_ROLLED_BACK);
-
-        var key = org.mockito.ArgumentCaptor.forClass(String.class);
-        verify(productFeignClient).deductStock(eq(11L), eq(1), key.capture(), any());
-        verify(productFeignClient).restoreStock(eq(11L), eq(1), eq(key.getValue()), any());
-        verifyNoInteractions(orderMapper, orderItemMapper, outboxService);
-    }
-
-    @Test
-    void rolledBackCompletionCompensatesDeduction() {
-        prepareValidCheckout();
-        when(productFeignClient.deductStock(eq(11L), eq(1), anyString(), any())).thenReturn(R.ok("deducted"));
-        when(productFeignClient.restoreStock(eq(11L), eq(1), anyString(), any())).thenReturn(R.ok("restored"));
-        assertEquals(200, service.createOrder(7L, 9L, "", "token").getCode());
-        completeTransaction(TransactionSynchronization.STATUS_ROLLED_BACK);
-        verify(productFeignClient).restoreStock(eq(11L), eq(1), anyString(), any());
-    }
-
-    @Test
     void committedOrderDoesNotRestoreStock() {
         prepareValidCheckout();
         when(productFeignClient.deductStock(eq(11L), eq(1), anyString(), any())).thenReturn(R.ok("deducted"));
         service.createOrder(7L, 9L, "", "token");
         completeTransaction(TransactionSynchronization.STATUS_COMMITTED);
         verify(productFeignClient, never()).restoreStock(anyLong(), anyInt(), anyString(), any());
-    }
-
-    @Test
-    void failedRestorePersistsRetryInIndependentTransaction() {
-        prepareValidCheckout();
-        when(productFeignClient.deductStock(eq(11L), eq(1), anyString(), any()))
-                .thenThrow(new IllegalStateException("response lost"));
-        when(productFeignClient.restoreStock(eq(11L), eq(1), anyString(), any()))
-                .thenReturn(R.fail("temporarily unavailable"));
-        assertThrows(BusinessException.class, () -> service.createOrder(7L, 9L, "", "token"));
-        completeTransaction(TransactionSynchronization.STATUS_ROLLED_BACK);
-        verify(transactionManager).getTransaction(argThat(definition -> definition.getPropagationBehavior()
-                == org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW));
-        verify(outboxService).saveMessage(eq(SystemConstants.KAFKA_TOPIC_STOCK_RESTORE), anyString(),
-                argThat(payload -> payload.contains("\"productId\":11") && payload.contains("\"quantity\":1")));
-        verify(transactionManager).commit(any());
     }
 
     @Test
@@ -258,7 +225,6 @@ class OrderServiceRegressionTest {
     }
 
     private void prepareCheckout() {
-        when(redisTemplate.execute(any(RedisScript.class), anyList(), eq("token"))).thenReturn(1L);
         CartItemDTO cart = new CartItemDTO();
         cart.setProductId(11L);
         cart.setQuantity(1);

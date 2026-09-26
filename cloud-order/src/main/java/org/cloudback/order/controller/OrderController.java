@@ -4,7 +4,9 @@ import lombok.RequiredArgsConstructor;
 import jakarta.validation.Valid;
 import org.cloudback.common.result.R;
 import org.cloudback.order.dto.CreateOrderRequest;
+import org.cloudback.order.dto.OrderRequestResult;
 import org.cloudback.order.model.entity.Order;
+import org.cloudback.order.service.OrderRequestService;
 import org.cloudback.order.service.OrderService;
 import org.springframework.web.bind.annotation.*;
 import java.util.List;
@@ -22,6 +24,13 @@ import java.util.List;
 public class OrderController {
 
     private final OrderService orderService;
+    private final OrderRequestService orderRequests;
+
+    @GetMapping("/requests/{token}")
+    public R<OrderRequestResult> requestResult(@RequestHeader("X-User-Id") Long userId,
+                                               @PathVariable String token) {
+        return R.ok(orderRequests.result(userId, token));
+    }
 
     /** POST /orders — 创建订单：幂等校验 → 查购物车 → 扣库存 → 写库 → 清购物车 → Kafka → Redis 超时 */
     @PostMapping
@@ -66,7 +75,7 @@ public class OrderController {
         return orderService.receiveOrder(userId, id);
     }
 
-    /** GET /orders/token — 生成下单幂等 Token（Redis 存储，30 分钟有效），防止重复提交 */
+    /** 获取或复用当前用户尚未完成的持久化下单请求。 */
     @GetMapping("/token")
     public R<String> getOrderToken(@RequestHeader("X-User-Id") Long userId) {
         return orderService.generateOrderToken(userId);

@@ -1,6 +1,5 @@
 package org.cloudback.order.service.impl;
 
-import cn.hutool.core.util.IdUtil;
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONObject;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
@@ -23,12 +22,11 @@ import org.cloudback.order.mapper.OrderMapper;
 import org.cloudback.order.model.entity.Order;
 import org.cloudback.order.model.entity.OrderItem;
 import org.cloudback.order.service.OrderService;
+import org.cloudback.order.service.OrderRequestService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.RedisTemplate;
-import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
@@ -43,8 +41,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.UUID;
-import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -54,12 +50,6 @@ public class OrderServiceImpl implements OrderService {
 
     private static final long ORDER_TIMEOUT_MINUTES = 30;
     private static final int MAX_EXPIRED_ORDERS_PER_SCAN = 20;
-    private static final DefaultRedisScript<Long> CONSUME_ORDER_TOKEN_SCRIPT = new DefaultRedisScript<>(
-            "local v = redis.call('GET', KEYS[1]) " +
-                    "if not v then return -1 end " +
-                    "if v ~= ARGV[1] then return 0 end " +
-                    "redis.call('DEL', KEYS[1]) return 1",
-            Long.class);
 
     private final OrderMapper orderMapper;
     private final OrderItemMapper orderItemMapper;
@@ -69,17 +59,20 @@ public class OrderServiceImpl implements OrderService {
     private final RedisTemplate<String, Object> redisTemplate;
     private final OutboxService outboxService;
     private final PlatformTransactionManager transactionManager;
+    private final OrderRequestService orderRequests;
 
     @Value("${cloud.internal.token}")
     private String internalToken;
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public R<Order> createOrder(Long userId, Long addressId, String remark, String orderToken) {
-        consumeOrderToken(userId, orderToken);
+        return R.ok("下单成功", orderRequests.create(userId, orderToken,
+                orderNo -> prepareOrder(userId, addressId, remark, orderNo), this::executeOrder));
+    }
 
+    private Order prepareOrder(Long userId, Long addressId, String remark, String orderNo) {
         R<List<CartItemDTO>> cartResult = cartFeignClient.getCheckedItems(userId);
-        if (cartResult.getCode() != 200) {
+        if (cartResult == null || cartResult.getCode() != 200) {
             throw new BusinessException("购物车服务暂时不可用");
         }
         if (cartResult.getData() == null || cartResult.getData().isEmpty()) {
@@ -87,9 +80,6 @@ public class OrderServiceImpl implements OrderService {
         }
 
         List<CartItemDTO> checkedItems = cartResult.getData();
-        List<Long> orderedProductIds = checkedItems.stream().map(CartItemDTO::getProductId).collect(Collectors.toList());
-
-        String orderNo = IdUtil.getSnowflakeNextIdStr();
         BigDecimal totalAmount = BigDecimal.ZERO;
         List<OrderItem> orderItems = new ArrayList<>();
 
@@ -123,40 +113,27 @@ public class OrderServiceImpl implements OrderService {
         order.setStatus(SystemConstants.ORDER_STATUS_UNPAID);
         order.setRemark(remark);
         fillAddress(userId, addressId, order);
+        order.setOrderItems(orderItems);
+        return order;
+    }
 
-        List<CartItemDTO> deductedItems = new ArrayList<>();
-        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-            @Override
-            public void afterCompletion(int status) {
-                if (status == STATUS_ROLLED_BACK) {
-                    rollbackDeductedStock(orderNo, deductedItems);
-                } else if (status == STATUS_UNKNOWN) {
-                    log.error("Order transaction outcome unknown; inventory requires reconciliation: orderNo={}", orderNo);
-                }
+    private void executeOrder(Order order) {
+        String orderNo = order.getOrderNo();
+        for (OrderItem item : order.getOrderItems()) {
+            R<String> stockResult = productFeignClient.deductStock(item.getProductId(), item.getQuantity(), orderNo, internalToken);
+            if (stockResult == null) {
+                throw new BusinessException("库存服务未返回结果");
             }
-        });
-        try {
-            for (CartItemDTO item : checkedItems) {
-                // Include unknown outcomes: the remote commit may succeed before the response is lost.
-                deductedItems.add(item);
-                R<String> stockResult = productFeignClient.deductStock(item.getProductId(), item.getQuantity(), orderNo, internalToken);
-                if (stockResult == null) {
-                    throw new BusinessException("库存服务未返回结果");
-                }
-                if (stockResult.getCode() != 200) {
-                    throw new BusinessException(stockResult.getCode(), stockResult.getMessage());
-                }
+            if (stockResult.getCode() != 200) {
+                throw new BusinessException(stockResult.getCode(), stockResult.getMessage());
             }
-
-            saveOrderAndItems(order, orderItems);
-            saveOrderCreateOutbox(order, userId, totalAmount);
-            registerAfterCommitSideEffects(userId, orderedProductIds, orderNo);
-
-            log.info("Order created: orderNo={}, totalAmount={}", orderNo, totalAmount);
-            return R.ok("下单成功", order);
-        } catch (Exception e) {
-            throw e instanceof BusinessException ? (BusinessException) e : new BusinessException(e.getMessage());
         }
+
+        saveOrderAndItems(order, order.getOrderItems());
+        saveOrderCreateOutbox(order, order.getUserId(), order.getTotalAmount());
+        registerAfterCommitSideEffects(order.getUserId(), order.getOrderItems().stream()
+                .map(OrderItem::getProductId).toList(), orderNo);
+        log.info("Order created: orderNo={}, totalAmount={}", orderNo, order.getTotalAmount());
     }
 
     @Override
@@ -339,27 +316,7 @@ public class OrderServiceImpl implements OrderService {
 
     @Override
     public R<String> generateOrderToken(Long userId) {
-        String token = UUID.randomUUID().toString();
-        redisTemplate.opsForValue().set("cloud:order:token:" + userId, token, ORDER_TIMEOUT_MINUTES, TimeUnit.MINUTES);
-        return R.ok(token);
-    }
-
-    private void consumeOrderToken(Long userId, String orderToken) {
-        if (orderToken == null || orderToken.isBlank()) {
-            throw new BusinessException("下单令牌不能为空");
-        }
-        String tokenKey = "cloud:order:token:" + userId;
-        Long result = redisTemplate.execute(
-                CONSUME_ORDER_TOKEN_SCRIPT, Collections.singletonList(tokenKey), orderToken);
-        if (result == null || result == -1L) {
-            throw new BusinessException("请勿重复提交订单");
-        }
-        if (result == 0L) {
-            throw new BusinessException("下单令牌无效");
-        }
-        if (result != 1L) {
-            throw new BusinessException("下单令牌校验失败");
-        }
+        return R.ok(orderRequests.issue(userId));
     }
 
     private ProductDTO loadPublishedProduct(Long productId) {
@@ -448,25 +405,6 @@ public class OrderServiceImpl implements OrderService {
         });
     }
 
-    private void rollbackDeductedStock(String orderNo, List<CartItemDTO> deductedItems) {
-        for (CartItemDTO item : deductedItems) {
-            try {
-                R<String> result = productFeignClient.restoreStock(item.getProductId(), item.getQuantity(), orderNo, internalToken);
-                if (result == null || result.getCode() != 200) {
-                    throw new IllegalStateException("库存回补未成功");
-                }
-            } catch (Exception ex) {
-                log.error("Restore deducted stock failed, enqueue compensation: productId={}", item.getProductId(), ex);
-                try {
-                    enqueueStockRestore(orderNo, null, item.getProductId(), item.getQuantity());
-                } catch (Exception persistenceFailure) {
-                    log.error("CRITICAL: stock compensation not persisted: orderNo={}, productId={}",
-                            orderNo, item.getProductId(), persistenceFailure);
-                }
-            }
-        }
-    }
-
     private boolean doCancelOrder(Order order) {
         int rows = orderMapper.update(null, new LambdaUpdateWrapper<Order>()
                 .eq(Order::getId, order.getId())
@@ -494,12 +432,6 @@ public class OrderServiceImpl implements OrderService {
                 }
             }
         });
-    }
-
-    private void enqueueStockRestore(String orderNo, Long orderId, Long productId, Integer quantity) {
-        TransactionTemplate tx = new TransactionTemplate(transactionManager);
-        tx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
-        tx.executeWithoutResult(status -> saveStockRestoreMessage(orderNo, orderId, productId, quantity));
     }
 
     private void saveStockRestoreMessage(String orderNo, Long orderId, Long productId, Integer quantity) {

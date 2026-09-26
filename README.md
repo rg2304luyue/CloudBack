@@ -10,16 +10,16 @@ Spring Cloud Alibaba 微服务架构，8 个模块，三种角色（买家/卖�
 | 框架 | Spring Boot | 3.3.9 |
 | 微服务 | Spring Cloud | 2023.0.3 |
 | 微服务 | Spring Cloud Alibaba | 2023.0.1.0 |
-| 注册配置 | Nacos | 2.5.x (Docker) |
+| 注册中心 | Nacos | 2.5.1 (Docker，仅服务发现；配置中心依赖存在但未启用) |
 | API 网关 | Spring Cloud Gateway | — |
-| 认证 | JWT (jjwt 0.12.6 / HMAC-SHA256) | — |
+| 认证 | JWT (jjwt 0.12.6) / HMAC-SHA（256/384/512 随密钥长度自动选择） | — |
 | ORM | MyBatis-Plus | 3.5.11 |
 | 连接池 | Druid | 1.2.24 |
 | 缓存 | Redis | 7.x (宿主机) |
 | 本地缓存 | Caffeine | 3.1.8 |
 | 消息队列 | Kafka | 3.9.x (Docker) |
 | 对象存储 | MinIO | latest (Docker) |
-| 熔断限流 | Sentinel | 1.8.x (Docker) |
+| 熔断限流 | Sentinel | 1.8.x (Docker，当前仅接入 dashboard，未配置规则) |
 | 远程调用 | OpenFeign + LoadBalancer | — |
 | 搜索引擎 | Meilisearch | 1.10 (Docker) |
 | 第三方支付 | 支付宝 SDK (alipay-sdk-java) | 4.40.806.ALL |
@@ -33,7 +33,7 @@ Spring Cloud Alibaba 微服务架构，8 个模块，三种角色（买家/卖�
 CloudBack/
 ├── pom.xml                     # 父 POM，统一依赖版本管理
 ├── .env                        # 环境变量（VM_HOST 等，启动时自动加载）
-├── start-all.bat               # Windows 一键启动 7 个服务
+├── start-all.bat               # Windows 一键启动：mvn install → 7 个后端 → 前端 preview(4173)
 │
 ├── cloud-common/               # 公共模块（被所有模块依赖，不独立部署）
 │   └── src/main/java/org/cloudback/common/
@@ -48,7 +48,6 @@ CloudBack/
 │       ├── constant/           # SystemConstants（final class，Token前缀、Redis Key、订单状态等）
 │       ├── utils/              # JwtUtil（签发/解析/验证 JWT）
 │       └── mapper/             # UserMapper、OutboxMessageMapper（共享 MyBatis-Plus 映射）
-| `OutboxService` | 消息发件箱服务，saveMessage() 持久化 + pollAndSend() 轮询，由 cloud-order/cloud-payment 显式 Bean 声明 |
 │
 ├── cloud-gateway/  :8080       # API 网关
 │   └── src/main/java/org/cloudback/gateway/
@@ -62,27 +61,27 @@ CloudBack/
 │       ├── controller/AuthController.java
 │       └── service/impl/AuthServiceImpl.java
 │
-├── cloud-user/     :8083       # 用户服务（@EnableFeignClients 聚合看板数据）
+├── cloud-user/     :8083       # 用户服务（个人信息、地址、卖家申请审批）
 │   └── src/main/java/org/cloudback/user/
 │       ├── UserApplication.java
 │       ├── controller/
 │       │   ├── UserController.java
-│       │   └── AdminUserController.java      # 管理员：用户管理 + 看板统计
+│       │   └── AdminUserController.java      # 管理员：用户管理 + 卖家申请审批
 │       ├── service/impl/UserServiceImpl.java
-│       ├── feign/              # OrderFeignClient、ProductFeignClient（聚合看板数据）
+│       ├── dto/                # AddressRequest、ProcessApplicationRequest 等
 │       ├── model/entity/       # Address、SellerApplication
 │       └── mapper/             # AddressMapper、SellerApplicationMapper
 │
 ├── cloud-product/  :8082       # 商品服务
 │   └── src/main/java/org/cloudback/product/
 │       ├── ProductApplication.java
-│       ├── controller/ProductController.java
+│       ├── controller/         # ProductController、AdminProductController、SellerProductController、CategoryController
 │       ├── service/
 │       │   ├── impl/ProductServiceImpl.java
 │       │   ├── SearchService.java
 │       │   └── impl/SearchServiceImpl.java    # Meilisearch 索引与搜索
-│       ├── model/entity/       # Category、Product
-│       └── mapper/             # CategoryMapper、ProductMapper
+│       ├── model/entity/       # Category、Product、InventoryOperation
+│       └── mapper/             # CategoryMapper、ProductMapper、InventoryOperationMapper（库存账本）
 │
 ├── cloud-cart/     :8084       # 购物车服务（Redis Hash + Caffeine 读缓存）
 │   └── src/main/java/org/cloudback/cart/
@@ -97,16 +96,19 @@ CloudBack/
 │       ├── OrderApplication.java
 │       ├── controller/
 │       │   ├── OrderController.java              # 买家订单：创建/查询/取消/确认收货
-│       │   └── SellerOrderController.java        # 卖家订单：查询/发货
+│       │   ├── SellerOrderController.java        # 卖家订单：查询/发货
+│       │   └── OutboxAdminController.java        # 失败 Outbox 查看/重放（ADMIN）
+│       ├── service/OrderRequestService.java     # 下单请求状态机（order_request + 30 秒恢复调度）
 │       ├── service/impl/OrderServiceImpl.java    # 核心下单编排
 │       ├── scheduler/OrderTimeoutScheduler.java  # 定时扫描超时订单自动取消
 │       ├── scheduler/OutboxScheduler.java        # Outbox 消息定时发送
 │       ├── mq/PaymentResultConsumer.java         # Kafka 支付结果消费者（含支付-取消竞态检测）
+│       ├── mq/StockRestoreConsumer.java          # Kafka 库存回补消费者（幂等由商品服务账本保证）
 │       ├── feign/              # CartFeignClient、ProductFeignClient、UserFeignClient
 │       │                       # CartItemDTO、ProductDTO
 │       ├── config/FeignRequestInterceptor.java   # 用户上下文透传
-│       ├── model/entity/       # Order、OrderItem
-│       └── mapper/             # OrderMapper、OrderItemMapper
+│       ├── model/entity/       # Order、OrderItem、OrderRequest
+│       └── mapper/             # OrderMapper、OrderItemMapper、OrderRequestMapper
 │
 ├── cloud-payment/  :8086       # 支付服务
 │   └── src/main/java/org/cloudback/payment/
@@ -118,10 +120,11 @@ CloudBack/
 │       ├── service/impl/PaymentServiceImpl.java  # 支付宝页面支付核心逻辑
 │       ├── mq/OrderCreateConsumer.java           # Kafka 订单创建消费者
 │       ├── scheduler/OutboxScheduler.java        # Outbox 消息定时发送
+│       ├── scheduler/PaymentReconciliationScheduler.java # 待支付记录对账（启动 10s 后，每 30s，批量 20）
 │       ├── model/entity/Payment.java
 │       └── mapper/PaymentMapper.java
 │
-├── sql/init.sql                # 建库建表 DDL
+├── sql/init.sql                # 基础表 DDL（未含 order_request / inventory_operation，见 sql/migrations/ 人工迁移）
 └── docker/                     # Docker Compose（Nacos、Kafka、Sentinel、MinIO、Meilisearch）
 ```
 
@@ -154,12 +157,12 @@ CloudBack/
 ```text
 登录 → AuthServiceImpl 签发 JWT（sub=userId, username, role）
   → 前端存 localStorage，每次请求带 Authorization: Bearer <token>
-  → Gateway AuthGlobalFilter 解析 JWT → 注入 X-User-Id、X-Username、X-User-Role
+  → Gateway 先剥离入站可信头，再解析 JWT → 注入 X-User-Id、X-Username、X-User-Role（role 缺省按 BUYER）
   → 下游服务 Controller 用 @RequestHeader 读取
   → Feign 调用时由 FeignRequestInterceptor 透传这三个头
 ```
 
-Gateway 白名单外的所有请求强制携带有效 JWT，解析失败返回 401。支付回调路径（支付宝异步通知和同步回跳）在白名单内，无需 JWT。
+Gateway 白名单（方法+路径精确匹配）之外的请求强制携带有效 JWT，解析失败返回 401；命中白名单时先剥离 X-User-Id / X-Username / X-User-Role / X-Internal-Token 再直接放行（不解析 JWT）。支付回调路径（POST /api/payment/notify/alipay、GET /api/payment/return/alipay）在白名单内。
 
 ---
 
@@ -176,9 +179,11 @@ Gateway 白名单外的所有请求强制携带有效 JWT，解析失败返回 4
 | `BaseEntity` | 实体基类，`id`（雪花算法）、`createTime`、`updateTime`、`deleted`（逻辑删除），由 `AutoFillMetaObjectHandler` 自动填充 |
 | `BusinessException` | 业务异常，携带 `code` + `message`，由 `GlobalExceptionHandler` 统一捕获返回 `R.fail()` |
 | `GlobalExceptionHandler` | `@RestControllerAdvice`，处理 BusinessException / BindException / MethodArgumentNotValidException / 兜底 Exception |
-| `OutboxMessage` | 消息发件箱实体，映射 outbox_message 表 |，处理 Feign 调用失败（避免无 Feign 依赖的模块启动失败） |
-| `OutboxService` | 消息发件箱服务，saveMessage() 持久化 + pollAndSend() 轮询，由 cloud-order/cloud-payment 显式 Bean 声明 |
-| `JwtUtil` | HMAC-SHA256 签发/解析/验证 JWT，token 有效期 2 小时，claims 含 userId、username、role |
+| `FeignExceptionHandler` | 独立 Feign 异常处理器，`@ConditionalOnClass` 保证无 Feign 依赖的模块可启动 |
+| `OutboxMessage` | 消息发件箱实体，映射 outbox_message 表（status 0=PENDING/1=SENT/2=FAILED/3=SENDING） |
+| `OutboxService` | 消息发件箱：saveMessage() 持久化 + pollPending()/claimMessage() 条件抢占（PENDING→SENDING）+ 超时回收，由 cloud-order/cloud-payment 显式声明 Bean |
+| `JwtUtil` | HMAC-SHA（256/384/512 随密钥长度自动选择）签发/解析/验证 JWT，token 有效期 2 小时，claims 含 userId、username、role |
+| `JwtSecretConfig` | 启动时校验 JWT_SECRET（缺失或 <32 字符直接失败）并注入 JwtUtil |
 | `SystemConstants` | 所有常量：Redis Key 前缀、订单状态码、Kafka Topic 名、角色字符串 |
 | `User` | 共享 User 实体（auth 和 user 服务共用），字段：username、password(BCrypt)、role、status |
 | `UserMapper` | 共享 User 的 MyBatis-Plus BaseMapper |
@@ -194,7 +199,7 @@ Gateway 白名单外的所有请求强制携带有效 JWT，解析失败返回 4
 | `DotenvEnvironmentPostProcessor` | Spring 启动前加载 `.env` 文件到 Environment，支持 `${VAR}` 引用 |
 | `MinioConfig` | 创建 `MinioClient` Bean，自动初始化 Bucket 并设置公开读策略；`@ConditionalOnProperty` 确保只在配置了 `minio.endpoint` 的模块中加载 |
 | `CaffeineConfig` | 创建 4 个 Caffeine Cache 实例（商品详情/热门/ID列表/购物车），并组装对应的 `TwoLevelCacheService` Bean；`@ConditionalOnClass(RedisTemplate.class)` 确保 gateway/auth 等无 Redis 依赖的模块自动跳过 |
-| `TwoLevelCacheService` | 通用二级缓存服务：L1(Caffeine 30s)→L2(Redis)→DB，Redis 故障自动降级 |，提供 `get()` 穿透读取和 `evict()` 双删（先 Redis 后 Caffeine）|
+| `TwoLevelCacheService` | 通用二级缓存服务：L1(Caffeine 30s)→L2(Redis)→DB，Redis 故障自动降级；提供 `get()` 穿透读取和 `evict()` 双删（先 Redis 后 Caffeine） |
 | `CommonAutoConfiguration` | `@ComponentScan("org.cloudback.common")`，使 `FileService` 等 `@Service` 组件能被所有依赖 cloud-common 的模块自动发现 |
 | `FileService` | MinIO 文件上传服务，封装 `putObject` 逻辑，按 prefix 分目录存储（avatar/product），`@ConditionalOnBean(MinioClient.class)` 确保仅在配置了 MinIO 的模块中加载 |
 | `MeilisearchConfig` | 创建 `com.meilisearch.sdk.Client` Bean；`@ConditionalOnProperty(prefix = "meili", name = "host")` 确保仅在配置了 Meilisearch 的模块中加载 |
@@ -212,11 +217,11 @@ Gateway 白名单外的所有请求强制携带有效 JWT，解析失败返回 4
 ```
 
 | Bean 名称 | 使用场景 | Caffeine 最大条目 | Redis Key 前缀 | Redis TTL |
-|---|---|---|---|---|---|
+|---|---|---|---|---|
 | `productDetailTwoLevel` | 商品详情 | 1000 | `cloud:product:detail:` | 300s |
 | `hotProductsTwoLevel` | 热门商品 Top8 | 5 | `cloud:product:hot` | 300s |
-| `productIdListTwoLevel` | 商品列表 ID 映射 | 200 | `cloud:product:ids:` | 120s | 120s（2min，写操作不主动淘汰，短 TTL 兜底） |
-| `cartTwoLevel` | 购物车（独立 key） | 500 | `cloud:cart:cache:` |
+| `productIdListTwoLevel` | 商品列表 ID 映射 | 200 | `cloud:product:ids:` | 120s（2min，写操作不主动淘汰，短 TTL 兜底） |
+| `cartTwoLevel` | 购物车（独立 key） | 500 | `cloud:cart:cache:` | 300s |
 
 ### 各场景实现
 
@@ -224,9 +229,9 @@ Gateway 白名单外的所有请求强制携带有效 JWT，解析失败返回 4
 
 **热门商品**：`getHotProducts()` 的 DB loader 仍从 Redis ZSet 取 topId → 批量查 DB，结果被 L1/L2 缓存。L1 30s 过期后自动从 L2 或 DB 刷新，避免每次首页请求都查 ZSet+DB。
 
-**商品列表（ID-Mapping）**：条件查询的组合太多（categoryId × keyword），无法直接缓存全量产品。改为缓存"查询条件 → 产品 ID 列表"的映射（`cloud:product:ids:{categoryId}:{keyword}`，Redis TTL 2min），拿到 ID 列表后手动分页，再逐个从 `productDetailTwoLevel` 获取产品详情。一份产品详情只存一份，避免缓存膨胀。新增/删除/审核商品后不主动淘汰 ID 列表缓存，通过短 TTL 自动过期保证最终一致。
+**商品列表（ID-Mapping）**：条件查询的组合太多（categoryId × keyword），无法直接缓存全量产品。改为缓存"查询条件 → 产品 ID 列表"的映射（`cloud:product:ids:{categoryId|all}`，Redis TTL 2min），拿到 ID 列表后手动分页，再逐个从 `productDetailTwoLevel` 获取产品详情。一份产品详情只存一份，避免缓存膨胀。新增/删除/审核商品后不主动淘汰 ID 列表缓存，通过短 TTL 自动过期保证最终一致。
 
-**购物车**：源数据仍在 Redis Hash（`cloud:cart:{userId}`），读路径上包一层 Caffeine 缓存（`cloud:cart:cache:{userId}`），减少高频读操作的 Redis 网络往返。`addItem()` / `updateQuantity()` / `removeItem()` / `checkItem()` / `clearCart()` 操作后同步 evict 缓存。
+**购物车**：源数据仍在 Redis Hash（`cloud:cart:{userId}`），读路径上包一层 Caffeine 缓存（`cloud:cart:cache:{userId}`），减少高频读操作的 Redis 网络往返。`addItem()` / `updateQuantity()` / `removeItem()` / `checkItem()` / `checkAllItems()` / `clearCart()` 在锁内完成后立即 evict 两个 key（先 Redis 后 Caffeine），不经事务回调。
 
 ---
 
@@ -237,14 +242,18 @@ Gateway 白名单外的所有请求强制携带有效 JWT，解析失败返回 4
 **AuthGlobalFilter**（`order = -100`，最高优先级）：
 
 ```text
-1. 检查路径是否在白名单（/auth/login、/auth/register、/products、/products/hot、/products/search、/products/suggest、/categories）
-   → 白名单：直接放行（无需登录即可浏览商品）
+1. 路径去掉 /api 前缀后按「方法+路径」匹配白名单
+   （POST /auth/login、POST /auth/register、GET /auth/health、
+    POST /payment/notify/alipay、GET /payment/return/alipay、
+    GET /products、GET /products/{id}（纯数字）、GET /products/hot、
+    GET /products/search、GET /products/suggest、GET /categories）
+   → 命中：剥离 X-User-Id、X-Username、X-User-Role、X-Internal-Token 后直接放行（不解析 JWT）
 2. 提取 Authorization: Bearer <token> 头
    → 缺失或格式不正确：返回 401 JSON
-3. JwtUtil.parseToken(token) 解析
-   → 过期或无效：返回 401 JSON
-4. 从 Claims 提取 userId、username、role
-5. 向请求头注入 X-User-Id、X-Username、X-User-Role
+3. JwtUtil 解析
+   → 过期或无效：返回 401 JSON；role 为空时按 BUYER 处理
+4. 剥离请求方自带的 X-User-Id、X-Username、X-User-Role、X-Internal-Token
+5. 注入 X-User-Id、X-Username、X-User-Role
 6. 放行到下游微服务
 ```
 
@@ -272,18 +281,16 @@ CORS 通过 `CorsConfig`（WebFlux `CorsWebFilter`）全局允许所有来源。
 
 | 调用方 | Feign 接口 | 目标服务 | 接口 |
 |---|---|---|---|
-| cloud-cart | `ProductFeignClient` | cloud-product | `GET /product/detail/{id}` |
-| cloud-order | `CartFeignClient` | cloud-cart | `GET /cart/checked`、`DELETE /cart/clear` |
-| cloud-order | `ProductFeignClient` | cloud-product | `POST /products/{id}/stock/deduct`、`POST /products/{id}/stock/restore`、`GET /products/{id}`、`GET /products/seller?sellerId=` |
-| cloud-order | `UserFeignClient` | cloud-user | `GET /users/me/addresses/{id}` |
-| cloud-user | `OrderFeignClient` | cloud-order | `GET /orders/stats` |
-| cloud-user | `ProductFeignClient` | cloud-product | `GET /products/stats` |
+| cloud-cart | `ProductFeignClient` | cloud-product | `GET /products/{id}` |
+| cloud-order | `CartFeignClient` | cloud-cart | `GET /cart/checked`、`DELETE /cart/items`、`DELETE /cart/items/{productId}` |
+| cloud-order | `ProductFeignClient` | cloud-product | `POST /products/{id}/stock/deduct`、`POST /products/{id}/stock/restore`（均带 X-Internal-Token）、`GET /products/{id}`、`GET /products/seller?sellerId=` |
+| cloud-order | `UserFeignClient` | cloud-user | `GET /users/me/addresses/{addressId}` |
 
-**Feign 用户上下文透传**：`cloud-order` 中的 `FeignRequestInterceptor` 实现了 `feign.RequestInterceptor`，从当前 HTTP 请求（`RequestContextHolder`）提取 `X-User-Id`、`X-Username`、`X-User-Role`，自动注入到每个 Feign 请求头，确保下游服务能识别调用方身份。
+**Feign 用户上下文透传**：`cloud-order` 中的 `FeignRequestInterceptor` 实现了 `feign.RequestInterceptor`，从当前 HTTP 请求（`RequestContextHolder`）提取 `X-User-Id`、`X-Username`、`X-User-Role`，自动注入到每个 Feign 请求头，确保下游服务能识别调用方身份；`X-Internal-Token` 不在透传范围内，由调用方显式作为方法参数传入。
 
 ### Kafka 异步消息
 
-三个 Topic，形成订单-支付闭环：
+三个 Topic（order-create、payment-result、stock-restore），形成订单-支付闭环：
 
 ```
 cloud-order 下单成功（事务提交后）
@@ -300,6 +307,12 @@ cloud-order 下单成功（事务提交后）
     → 主动查询支付宝交易状态 → 确认已付 → 同上更新
   → cloud-order.PaymentResultConsumer 消费 "payment-result"
     → UPDATE order_info.status = 已支付, pay_time = now()
+
+另有一条库存回补链路（第三个 Topic）：
+cloud-order（取消/超时/下单失败补偿）生产 "stock-restore"
+  → cloud-order.StockRestoreConsumer 消费
+    → Feign 调 cloud-product 回补库存；幂等由 cloud-product 的 inventory_operation 账本（EMPTY/RESERVED/RESTORED）在商品库事务内保证
+（SystemConstants 中另有未被引用的历史常量 inventory-deduct）
 ```
 
 ---
@@ -309,13 +322,13 @@ cloud-order 下单成功（事务提交后）
 ### 1. 注册与登录
 
 ```
-注册 POST /api/auth/register?username=&password=&nickname=
+注册 POST /api/auth/register（JSON body: username, password, nickname）
   1. 检查 username 唯一性（SELECT count FROM user WHERE username = ?）
   2. BCrypt.hashpw(password) 加密
   3. INSERT user (username, password, nickname, role='BUYER', status=1)
   4. 返回成功 → 前端跳转 /login
 
-登录 POST /api/auth/login?username=&password=
+登录 POST /api/auth/login（JSON body: username, password）
   1. SELECT FROM user WHERE username = ?
   2. BCrypt.checkpw(password, user.password) 验证
   3. 检查 user.status != 0（未禁用）
@@ -326,11 +339,11 @@ cloud-order 下单成功（事务提交后）
 ### 2. 热门商品（Redis ZSET 排行榜）
 
 ```
-浏览商品 GET /api/product/detail/{id}
+浏览商品 GET /api/products/{id}
   → ZINCRBY cloud:product:views {productId} 1
   → Redis 挂了：catch 异常，仅 log.warn，不影响详情页正常返回
 
-首页 GET /api/product/hot
+首页 GET /api/products/hot
   1. 先查二级缓存(L1→L2)，命中直接返回
   2. 未命中：ZREVRANGE cloud:product:views 0 7（取浏览量 Top8 的商品 ID）
   3. selectBatchIds(ids) 批量查 MySQL 获取完整商品信息
@@ -352,7 +365,7 @@ GET /api/products/suggest?keyword=
   3. 直接返回分页结果
 
 无 keyword 时走原有 ID-Mapping 缓存（详见二级缓存架构章节）：
-  1. 先查 cloud:product:ids:{categoryId}: 缓存（L1→L2）
+  1. 先查 cloud:product:ids:{categoryId|all} 缓存（L1→L2）
   2. 未命中则查 DB：只 SELECT id，按条件过滤 + 按销量排序
      → 缓存 ID 列表，TTL 2min
   3. 手动分页截取当前页的 ID 子集
@@ -374,7 +387,7 @@ GET /api/products/suggest?keyword=
   Key:   cloud:cart:{userId}
   Field: productId（String）
   Value: CartItem JSON { productId, name, mainImage, price, quantity, checked }
-  TTL:   7 天，每次操作续期
+  TTL:   7 天（addItem/updateQuantity 时续期）
 
 读缓存（Caffeine + Redis，独立 key）
   Key:   cloud:cart:cache:{userId}        → 全量列表
@@ -390,16 +403,16 @@ GET /api/products/suggest?keyword=
      → 已有：累加 quantity，更新 name/image/price（保证最新）
      → 没有：创建新 CartItem，checked 默认 true
   4. HSET + EXPIRE 续期 7 天
-  5. 解锁 + evict 读缓存（两个 key）
+  5. evict 读缓存（锁内，两个 key）→ 解锁
 
 更新数量 PATCH /api/cart/items/{productId} (JSON body: {quantity})
-  → Redisson RLock → HGET → 修改 quantity → HSET → 解锁 → evict 读缓存
+  → Redisson RLock → HGET → 修改 quantity → HSET → evict 读缓存（锁内）→ 解锁
 
 勾选 PATCH /api/cart/items/{productId}/check (JSON body: {checked})
-  → Redisson RLock → HGET → 修改 checked → HSET → 解锁 → evict 读缓存
+  → Redisson RLock → HGET → 修改 checked → HSET → evict 读缓存（锁内）→ 解锁
 
 全选/取消全选 PATCH /api/cart/items/check-all (JSON body: {checked})
-  → Redisson RLock → HGETALL → 遍历所有商品修改 checked → 批量 HSET → 解锁 → evict 读缓存
+  → Redisson RLock → HGETALL → 遍历所有商品修改 checked → 批量 HSET → evict 读缓存（锁内）→ 解锁
 
 获取购物车 GET /api/cart/list
   → L1 → L2 → HGETALL → 回填 L1+L2
@@ -407,7 +420,7 @@ GET /api/products/suggest?keyword=
 获取勾选商品 GET /api/cart/checked
   → L1 → L2 → HGETALL → filter(checked=true) → 回填 → 供订单服务下单时使用
 
-清空 DEL /api/cart/clear → DEL cloud:cart:{userId} → evict 读缓存
+清空 DELETE /api/cart/items → DEL cloud:cart:{userId} → evict 读缓存（锁内）
 ```
 
 ### 5. 下单（核心编排，先扣库存再写订单）
@@ -415,48 +428,54 @@ GET /api/products/suggest?keyword=
 ```text
 POST /api/orders (JSON body: { addressId, remark, orderToken })
 
-Step 0: 幂等校验（Lua 脚本原子 GET + DELETE）
-  - 验证 orderToken：Lua 脚本原子 get-and-delete order token
-  - 匹配成功 → token 已在脚本中删除（一次性使用，无并发窗口）
-  - 不匹配或已过期 → BusinessException "请勿重复提交订单"
+Step 0: 获取下单请求（GET /api/orders/token）
+  - OrderRequestService.issue() 在 order_request 表创建/复用请求：
+    token=UUID 主键、orderNo=雪花号（预分配）、status=READY、expires_at=+30 分钟
+  - 同一用户仅允许一个未完成请求（uk_order_request_active_user 唯一键，多实例并发由 DuplicateKeyException 兜底）
+  - 令牌不在 Redis；请求状态持久化在 MySQL
 
-Step 1: Feign → CartFeignClient.getCheckedItems(userId)
-        获取用户已勾选的购物车商品（过滤 checked=true）
-        若为空 → BusinessException "购物车中没有已勾选的商品"
+Step 1: 提交订单（OrderRequestService.create）
+  - 以 SELECT ... FOR UPDATE SKIP LOCKED 锁定请求行
+  - status == SUCCEEDED → 直接返回原订单（重试不重复下单）
+  - status 不是 READY → 抛出对应状态提示（PROCESSING / COMPENSATING / EXPIRED 等）
+  - 准备阶段（无库存副作用）：
+    - Feign → CartFeignClient.getCheckedItems(userId)，为空 → BusinessException "购物车中没有已勾选的商品"
+    - 逐个 Feign → ProductFeignClient.getProductDetail(productId) 重载商品（名称/主图/价格，仅 status=1）
+    - 校验类失败（错误码 42201）→ 请求保持 READY，可用同一令牌修正后重试
+    - 订单快照（orderItems + 收货信息）写入 order_request.snapshot；status: READY → PROCESSING
 
-Step 2: 循环处理每个商品
-  - 计算 itemTotal = price × quantity，累加 totalAmount
-  - 从 CartItemDTO 提取 productName / productImage
-    若为 null → Feign → ProductFeignClient.getProductDetail(productId) 补全
-    仍为 null → BusinessException（防止 SQL 报错）
-
-Step 3: 构建 Order 实体
-  - 雪花 ID 生成 orderNo
-  - status = 0 (UNPAID)
-  - 若传了 addressId → Feign → UserFeignClient.getAddressById() 获取收货信息
-
-Step 4: Feign → ProductFeignClient.deductStock() × N（先扣库存）
-  - 原子 SQL 扣减：UPDATE product SET stock = stock - ?, sales = sales + ?
-    WHERE id = ? AND stock >= ?（WHERE 条件防超卖）
-  - 任一失败 → 返回 BusinessException，事务中止
-
-Step 5: saveOrderAndItems（写订单 + 明细 + Outbox 消息，同一事务）
-  - INSERT order_info（orderMapper.insert）
-  - INSERT order_item × N（orderItemMapper.insert），每条保存商品名称/图片/价格快照
+Step 2: 执行（独立 REQUIRES_NEW 事务，先扣库存再写订单）
+  - 逐项 Feign → ProductFeignClient.deductStock(productId, quantity, orderNo, X-Internal-Token)
+    原子 SQL：UPDATE product SET stock = stock - ?, sales = sales + ?
+              WHERE id = ? AND status = 1 AND stock >= ? AND deleted = 0
+    库存账本 inventory_operation(order_no, product_id) 三态守卫（EMPTY/RESERVED/RESTORED），重复扣减不重复生效
+  - INSERT order_info + order_item × N，每条保存商品名称/图片/价格快照
   - INSERT outbox_message（topic="order-create"），与订单在同一事务，保证消息不丢
+  - status: PROCESSING → SUCCEEDED
   - 事务提交后（TransactionSynchronization.afterCommit）：
-    - Feign → CartFeignClient.clearCart(userId) 清空购物车（异常不阻断）
-    - Redis: 将 orderNo → 超时时间戳存入 ZSet，供定时任务扫描
+    - 逐商品 Feign → CartFeignClient.removeItem(userId, productId)（不是清空购物车；异常不阻断）
+    - Redis: 将 orderNo → 超时时间戳存入 ZSet cloud:order:timeout，供定时任务扫描
   - OutboxScheduler（每 5 秒）扫描 outbox_message → 发送 Kafka → 标记已发送/重试
 
-Step 6（Step 4-5 中任一步失败）: 回滚已扣库存
-  - 逐项调用 ProductFeignClient.restoreStock(productId, quantity)
-  - restoreStock 失败时写入 Outbox（topic="stock-restore"）兜底重试
+Step 3（执行失败/结果不明）: 补偿
+  - status → COMPENSATING，逐项 Feign → ProductFeignClient.restoreStock(productId, quantity, orderNo)
+    回补 SQL 与扣减有意不对称：UPDATE product SET stock = stock + ?, sales = sales - ?
+              WHERE id = ? AND sales >= ? AND deleted = 0（不带 status=1，允许对已下架商品回补）
+  - 回补幂等由账本保证：重复回补只生效一次；先回补后迟到的扣减会被拒绝（记 RESTORED 墓碑）
+  - 全部回补成功 → status = FAILED（提示"下单未完成，库存已恢复，可以重新下单"）
+  - 未完成 → 保持 COMPENSATING，由恢复调度每 30 秒重试
+  - 返回 BusinessException "下单结果正在确认，请查询本次请求状态，勿重新下单"
 
-Step 7: 返回 Order 实体
+Step 4: 客户端确认（GET /api/orders/requests/{token}）
+  - 返回 { status, orderId, orderNo, message }
+  - 前端在响应不确定时每 2 秒轮询（最多 20 次），SUCCEEDED 后跳转订单详情
+
+恢复调度（OrderRequestService.recover，@Scheduled fixedDelay=30s）:
+  - 扫描 PROCESSING 超过 5 分钟、COMPENSATING 超过 30 秒的请求（LIMIT 20），重放补偿
+  - 服务重启后可继续；全部库存确认恢复后才置 FAILED
 ```
 
-**关键设计**：`createOrder` 全程 `@Transactional`，确保订单、明细、Outbox 消息写入的原子性；先扣库存再写订单（防止超卖）；非 DB 副作用（清购物车/Redis）通过 `TransactionSynchronization.afterCommit` 延迟到事务提交后执行；下单幂等 Token 使用 Lua 脚本原子 GET+DELETE 防止重复提交；Kafka 消息通过 Outbox 模式保证可靠投递（消息先写 DB，调度器异步发送，失败指数退避重试）；库存扣减失败时主动回滚，回滚失败写入 Outbox 兜底。
+**关键设计**：请求状态持久化（`order_request`）+ 行锁（`SELECT ... FOR UPDATE SKIP LOCKED`）+ 唯一键（`uk_order_request_active_user`）保证同一请求在多实例下串行执行且只生效一次；先扣库存再写订单（防止超卖）；库存副作用由 `inventory_operation` 账本与商品库事务共同保证幂等；非 DB 副作用（清购物车项/Redis）通过 `TransactionSynchronization.afterCommit` 延迟到事务提交后执行；Kafka 消息通过 Outbox 模式保证可靠投递（PENDING→SENDING 条件抢占、2 分钟超时回收、2^n 秒退避、5 次后转 FAILED 可管理端重放）。
 
 ### 6. 支付（支付宝沙箱页面支付）
 
@@ -518,7 +537,7 @@ PATCH /api/orders/{id}/cancel
      → 否则 BusinessException "只能取消待支付的订单"
   3. UPDATE order_info SET status = 4 (CANCELLED)
   4. 查询订单明细 (order_item)
-  5. 逐项调用 ProductFeignClient.restoreStock() 回滚库存和销量
+  5. 逐项写入 stock-restore Outbox 消息（与状态更新同一事务）；由 StockRestoreConsumer 消费后调用商品服务回补，inventory_operation 账本保证重复回补只生效一次
 ```
 
 ### 8. 申请成为卖家
@@ -529,7 +548,7 @@ PATCH /api/orders/{id}/cancel
   2. 检查是否已有 PENDING 的申请记录（防止重复提交）
   3. INSERT seller_application (userId, status='PENDING')
 
-管理员 GET /api/user/admin/applications
+管理员 GET /api/admin/applications
   → 列出所有 PENDING 的申请
 
 管理员 PATCH /api/admin/applications/{id} (JSON body: {approved})
@@ -541,15 +560,15 @@ PATCH /api/orders/{id}/cancel
 ### 9. 商品审核
 
 ```text
-卖家添加商品 POST /api/product
+卖家添加商品 POST /api/seller/products
   → SELLER：status = 2 (PENDING，待审核)
   → ADMIN：status = 1（直接上架）
 
-卖家编辑商品 PUT /api/product
+卖家编辑商品 PUT /api/seller/products/{id}
   → SELLER 编辑后 status 重新设为 2 (PENDING)
   → 卖家只能编辑自己的商品（sellerId 校验）
 
-管理员审核 GET /api/product/admin/pending
+管理员审核 GET /api/admin/products/pending
   → 列出所有 status = 2 的商品
 
 管理员审批 PATCH /api/admin/products/{id}/review (JSON body: {approved})
@@ -580,7 +599,7 @@ PATCH /api/admin/users/{id}/password (JSON body: {newPassword})
 
 卖家发货 PATCH /api/seller/orders/{id}/ship
   1. 查订单，校验 status == PAID（只能对已支付订单发货）
-  2. Feign 校验该订单包含此卖家的商品
+  2. Feign 校验该订单的全部商品均属于此卖家（整单发货）
   3. UPDATE order_info SET status = 2 (SHIPPED)
 ```
 
@@ -609,25 +628,19 @@ PATCH /api/admin/users/{id}/password (JSON body: {newPassword})
 取消订单：
   a. UPDATE order_info SET status = 4 (CANCELLED)
   b. 查询 order_item 明细
-  c. 逐项调用 ProductFeignClient.restoreStock() 回滚库存（best-effort，单条失败不中止其余）
+  c. 逐项写入 stock-restore Outbox（与取消同事务），由消费者异步回补并以账本保证幂等与不重复回补
   d. REMOVE Redis ZSet 中的 orderNo
 ```
 
 ### 14. 管理员看板
 
-```text
-GET /api/admin/stats（仅 ADMIN）
-  1. cloud-user 直接查询：userCount（用户总数）、sellerCount（卖家数）
-  2. Feign → ProductFeignClient.getProductStats() → productCount（上架商品数）
-  3. Feign → OrderFeignClient.getOrderStats() → orderCount、totalAmount、pendingOrderCount
-  4. 聚合返回统计卡片数据
-```
+当前未实现：仓库中不存在 /api/admin/stats 控制器，cloud-user 无 Feign 客户端，网关未路由该路径。
 
 ### 15. 图片上传（MinIO 对象存储）
 
 ```text
 前端选择文件
-  → FormData 封装，POST /api/product/upload （商品图）或 /api/user/avatar/upload （头像）
+  → FormData 封装，POST /api/products/upload （商品图，SELLER/ADMIN）或 POST /api/users/me/avatar （头像）
     → Controller 接收 MultipartFile，生成 UUID 文件名
     → MinioClient.putObject(bucket, objectName, inputStream, contentType)
     → 返回可公开访问的 URL：http://{VM_HOST}:9000/{bucket}/{objectName}
@@ -729,10 +742,9 @@ GET /api/admin/stats（仅 ADMIN）
 | DELETE | `/api/categories/{id}` | product | 是 | 删除分类 |
 | GET | `/api/products/hot` | product | 否 | 热门商品 Top8 |
 | GET | `/api/products` | product | 否 | 商品列表(分页/搜索/分类) |
-| GET | `/api/products/{id}` | product | 否 | 商品详情（可选传 X-User-Id 记录浏览历史） |
+| GET | `/api/products/{id}` | product | 否 | 商品详情（公开白名单接口） |
 | GET | `/api/products/search` | product | 否 | Meilisearch 全文搜索（支持中文分词/拼写纠错） |
 | GET | `/api/products/suggest` | product | 否 | 搜索建议/自动补全（query: keyword，返回商品名列表） |
-| GET | `/api/products/history` | product | 是 | 浏览历史（最近 20 条，从 Redis List 读取） |
 | GET | `/api/seller/products/mine` | product | 是 | 卖家自己的商品 |
 | POST | `/api/seller/products` | product | 是 | 添加商品（JSON body，SELLER/ADMIN） |
 | PUT | `/api/seller/products/{id}` | product | 是 | 修改商品（JSON body，id 在 URL） |
@@ -740,27 +752,29 @@ GET /api/admin/stats（仅 ADMIN）
 | GET | `/api/admin/products/pending` | product | 是 | 管理员-待审核商品 |
 | PATCH | `/api/admin/products/{id}/review` | product | 是 | 管理员-审批商品（JSON body: approved） |
 | POST | `/api/products/upload` | product | 是 | 上传商品图片到 MinIO |
-| POST | `/api/products/{id}/stock/deduct` | product | 内部 | Feign 原子扣库存（WHERE stock >= ?） |
-| POST | `/api/products/{id}/stock/restore` | product | 内部 | Feign 回滚库存（取消订单时调用） |
+| POST | `/api/products/{id}/stock/deduct` | product | 内部 | Feign 原子扣库存（需 X-Internal-Token，WHERE stock >= ? AND status = 1） |
+| POST | `/api/products/{id}/stock/restore` | product | 内部 | Feign 回补库存（需 X-Internal-Token，取消/补偿时调用） |
 | GET | `/api/cart` | cart | 是 | 购物车列表 |
+| GET | `/api/cart/checked` | cart | 是 | 已勾选商品列表（供下单 Feign 调用） |
 | POST | `/api/cart/items` | cart | 是 | 加入购物车（JSON body: productId, quantity） |
 | PATCH | `/api/cart/items/{productId}` | cart | 是 | 修改数量（JSON body: quantity） |
 | PATCH | `/api/cart/items/{productId}/check` | cart | 是 | 勾选/取消（JSON body: checked） |
 | PATCH | `/api/cart/items/check-all` | cart | 是 | 全选/取消全选（JSON body: checked） |
 | DELETE | `/api/cart/items/{productId}` | cart | 是 | 删除单项 |
 | DELETE | `/api/cart/items` | cart | 是 | 清空购物车 |
-| GET | `/api/orders/token` | order | 是 | 获取下单幂等 Token |
+| GET | `/api/orders/token` | order | 是 | 获取/复用当前用户未完成的下单请求令牌（order_request，30 分钟有效） |
+| GET | `/api/orders/requests/{token}` | order | 是 | 查询下单请求状态（READY/PROCESSING/SUCCEEDED/COMPENSATING/FAILED/EXPIRED） |
 | POST | `/api/orders` | order | 是 | 创建订单（JSON body: addressId, remark, orderToken） |
 | GET | `/api/orders` | order | 是 | 订单列表（query: page, size） |
 | GET | `/api/orders/{id}` | order | 是 | 订单详情（含订单明细 orderItems） |
+| GET | `/api/orders/by-no/{orderNo}` | order | 是 | 按订单号查询当前用户订单（支付结果页核对） |
 | PATCH | `/api/orders/{id}/cancel` | order | 是 | 取消订单（同时回滚库存） |
 | PATCH | `/api/orders/{id}/receive` | order | 是 | 确认收货（已发货 → 已完成） |
 | GET | `/api/seller/orders` | order | 是 | 卖家查看包含自己商品的订单 |
 | PATCH | `/api/seller/orders/{id}/ship` | order | 是 | 卖家发货（已支付 → 已发货） |
+| GET | `/api/orders/admin/outbox/failed` | order | 是(ADMIN) | 失败 Outbox 消息列表（limit 默认 50） |
+| POST | `/api/orders/admin/outbox/{id}/retry` | order | 是(ADMIN) | 重放失败 Outbox 消息 |
 | GET | `/api/products/seller?sellerId=` | product | 内部 | Feign 按卖家 ID 获取商品列表（query 参数） |
-| GET | `/api/products/stats` | product | 内部 | Feign 获取商品统计（上架数） |
-| GET | `/api/orders/stats` | order | 内部 | Feign 获取订单统计（总数/总金额/待支付数） |
-| GET | `/api/admin/stats` | user | 是 | 管理员看板数据（聚合用户/商品/订单统计） |
 | POST | `/api/payment/alipay` | payment | 是 | 发起支付（JSON body: orderNo） |
 | GET | `/api/payment/{orderNo}` | payment | 是 | 查询支付记录（待支付时自动同步支付宝状态） |
 | POST | `/api/payment/{orderNo}/sync` | payment | 是 | 主动向支付宝查询并同步支付状态 |
@@ -796,9 +810,11 @@ order_info ──< payment
 | `order_info` | id, order_no(UK), user_id, total_amount, status(0-4), receiver_* | uk_order_no, idx_user_id, idx_status |
 | `order_item` | id, order_id, order_no, product_id, product_name, price, quantity, total_amount | idx_order_id, idx_order_no |
 | `payment` | id, order_no, user_id, amount, pay_method, trade_no, status, last_sync_time | idx_order_no, idx_user_id |
-| `outbox_message` | id, topic, message_key, payload, status(0/1/2), retry_count, max_retries, next_retry_at | idx_status_retry |
+| `outbox_message` | id, topic, message_key, payload, status(0=PENDING/1=SENT/2=FAILED/3=SENDING), retry_count, max_retries, next_retry_at | idx_status_retry |
+| `order_request` | token(PK, UUID), user_id, active_user_id(UK), order_no(UK), status(READY/PROCESSING/SUCCEEDED/COMPENSATING/FAILED/EXPIRED), snapshot, failure_reason, expires_at | uk_order_request_active_user, uk_order_request_order_no, idx_order_request_recovery |
+| `inventory_operation` | order_no + product_id(复合 PK), quantity, state(EMPTY/RESERVED/RESTORED) | 复合主键即唯一键 |
 
-所有表包含 `create_time` / `update_time`（outbox_message 无逻辑删除），id 为雪花算法 BIGINT。`payment.last_sync_time` 记录上次主动查询支付宝的时间，用于频率限制（30 秒内不重复查询）。
+业务表（user/address/category/product/order_info/order_item/payment）包含 `create_time` / `update_time` 与逻辑删除；`outbox_message`、`order_request`、`inventory_operation` 无逻辑删除；`order_request` 主键为 UUID token，`inventory_operation` 为复合主键。`payment.last_sync_time` 记录上次主动查询支付宝的时间，用于频率限制（30 秒内不重复查询）。
 
 ### 订单状态流转
 
@@ -814,7 +830,7 @@ order_info ──< payment
 
 - **卖家发货**：`PATCH /seller/orders/{id}/ship`，仅已支付(1)可操作
 - **买家确认收货**：`PATCH /orders/{id}/receive`，仅已发货(2)可操作
-- **超时自动取消**：`OrderTimeoutScheduler` 每 60s 扫描超过 30 分钟未支付的订单，改为已取消并回滚库存
+- **超时自动取消**：`OrderTimeoutScheduler` 每秒扫描 Redis ZSet（每批 20 条），另有每 5 分钟的 DB 兜底扫描（30 分钟阈值），改为已取消并触发库存回补
 
 ---
 
@@ -826,17 +842,17 @@ order_info ──< payment
 | `cloud:product:views` | ZSet | 商品浏览量排行榜，score=浏览次数，member=productId |
 | `cloud:product:detail:{id}` | String | 商品详情 L2 缓存，TTL 5 分钟 |
 | `cloud:product:hot` | String | 热门商品 Top8 列表 L2 缓存，TTL 5 分钟 |
-| `cloud:product:ids:{categoryId}:{keyword}` | String | 商品列表 ID 映射 L2 缓存，TTL 2 分钟（写操作不主动淘汰，短 TTL 兜底） |
+| `cloud:product:ids:{categoryId\|all}` | String | 商品列表 ID 映射 L2 缓存，TTL 2 分钟（写操作不主动淘汰，短 TTL 兜底） |
 | `cloud:cart:cache:{userId}` | String | 购物车 L2 缓存，TTL 5 分钟 |
 | `cloud:cart:cache:checked:{userId}` | String | 已勾选商品 L2 缓存，TTL 5 分钟 |
-| `cloud:browse:history:{userId}` | List | 用户浏览历史，productId 字符串，最多 50 条，最新在左 |
 | `cloud:token:blacklist:{tokenId}` | String | Token 黑名单（预留，当前未使用） |
-| `cloud:order:token:{userId}` | String | 下单幂等 Token，UUID，TTL 30min，Lua 原子 GET+DELETE 消费 |
 | `cloud:order:timeout` | ZSet | 超时订单追踪，score=过期时间戳，OrderTimeoutScheduler 每秒扫描 |
-| `cloud:order:timeout:lock` | String | 超时扫描分布式锁（SETNX 5s），防止多实例重复执行 |
-| `cloud:outbox:order:lock` | String | cloud-order Outbox 发送锁（SETNX 10s） |
+| `cloud:order:timeout:lock` | String（Redisson RLock） | 超时扫描分布式锁（tryLock(0, 30s)），防止多实例重复执行 |
+| `cloud:order:scan:lock` | String（Redisson RLock） | DB 兜底扫描分布式锁（tryLock(0, 30s)） |
 
-**购物车并发保护**：`addItem`/`updateQuantity`/`checkItem` 使用 Redisson `RLock`（key: `cloud:cart:{userId}:lock`，TTL 5s），防止同一用户并发请求导致数据覆盖。
+下单幂等令牌不在 Redis：`order_request` 表持久化请求状态（UUID token 主键、30 分钟过期、`active_user_id` 唯一键约束同一用户仅一个活跃请求）；Outbox 投递不加锁，靠 DB 条件 UPDATE 抢占（PENDING→SENDING）。
+
+**购物车并发保护**：`addItem`/`updateQuantity`/`removeItem`/`checkItem`/`checkAllItems`/`clearCart` 均使用 Redisson `RLock`（key: `cloud:cart:{userId}:lock`，leaseTime 5s，无看门狗续期），防止同一用户并发请求导致数据覆盖。
 
 ---
 
@@ -851,6 +867,8 @@ REDIS_ADDR=${VM_HOST}
 NACOS_ADDR=${VM_HOST}:8848
 SENTINEL_ADDR=${VM_HOST}:8858
 KAFKA_ADDR=${VM_HOST}:9092
+# JWT 密钥（至少 32 字符，缺失或过短启动失败）
+JWT_SECRET=<your-secret>
 # MinIO 对象存储
 MINIO_ENDPOINT=${VM_HOST}:9000
 MINIO_ACCESS_KEY=admin
@@ -860,6 +878,8 @@ MINIO_BUCKET=cloudmall-products
 MEILI_HOST=${VM_HOST}
 MEILI_PORT=7700
 MEILI_MASTER_KEY=<your-master-key>
+# 内部调用令牌（cloud-product / cloud-order 必填）
+CLOUD_INTERNAL_TOKEN=<high-entropy-shared-value>
 # 支付宝沙箱
 ALIPAY_APP_ID=2021000148684222
 ALIPAY_PRIVATE_KEY=<PKCS8应用私钥单行>
@@ -867,7 +887,7 @@ ALIPAY_PUBLIC_KEY=<支付宝公钥单行>
 ALIPAY_GATEWAY=https://openapi-sandbox.dl.alipaydev.com/gateway.do
 ALIPAY_NOTIFY_URL=http://<IP>:8080/api/payment/notify/alipay
 ALIPAY_RETURN_URL=http://localhost:4173/payment/result
-# 前端地址（支付宝同步回跳目标，可配置避免硬编码）
+# 前端地址（支付宝同步回跳目标，默认 http://localhost:4173；写入 .env 不生效，需以系统环境变量覆盖）
 ALIPAY_FRONTEND_URL=http://localhost:4173
 ```
 
@@ -907,10 +927,10 @@ CloudBack/.claude/
 ### 数据正确性
 - **分页 total 修复**：Meilisearch 搜索结果总数改用 `rawSearch` 解析 `estimatedTotalHits`，修复分页仅显示一页的 Bug
 - **购物车数量校验**：`addItem`/`updateQuantity` 增加正数/上限（999）校验
-- **下单令牌优化**：保持 get + delete 简单模式，`@Transactional` 确保令牌消费与订单创建在同一事务中
+- **下单令牌优化**：改为 `order_request` 持久化请求状态机（2026-09 重构，取代原 Redis 方案）
 
 ### 并发安全
-- **定时任务分布式锁**：`OrderTimeoutScheduler` 使用 Redis SETNX 防止多实例重复执行
+- **定时任务分布式锁**：`OrderTimeoutScheduler` 使用 Redisson `tryLock(0, 30s)`（timeout/scan 两把锁）防止多实例重复执行
 - **卖家申请防重复**：`applySeller` 增加 `DuplicateKeyException` 捕获；`processApplication` 添加 `@Transactional` + 条件 UPDATE（`status = PENDING`）
 - **商品操作事务**：`addProduct`/`updateProduct`/`reviewProduct` 添加 `@Transactional`
 
@@ -934,12 +954,12 @@ CloudBack/.claude/
 ### 2026-06-03 架构增强
 
 **并发安全**
-- 购物车 `addItem`/`updateQuantity`/`checkItem` 使用 Redisson `RLock` 分布式锁，防止并发读写覆盖
-- 下单幂等 Token 改用 Lua 脚本原子 GET+DELETE，消除 GET 与 DELETE 之间的并发窗口
+- 购物车 `addItem`/`updateQuantity`/`removeItem`/`checkItem`/`checkAllItems`/`clearCart` 使用 Redisson `RLock` 分布式锁（leaseTime 5s），防止并发读写覆盖
+- 下单幂等改用 `order_request` 状态机（`SELECT ... FOR UPDATE SKIP LOCKED` + `uk_order_request_active_user` 唯一键），消除并发窗口（2026-09 重构，取代原 Redis 方案）
 
 **消息可靠性**
 - 引入 Outbox 模式：订单创建和支付结果通知不再直接发送 Kafka，改为先写 `outbox_message` 表（与业务在同一事务），由 `OutboxScheduler` 每 5 秒扫描发送，失败指数退避重试（2^n 秒，最多 5 次）
-- 库存回滚失败时写入 Outbox 兜底，避免因网络瞬断导致库存永久丢失
+- 取消/超时订单的库存回补与状态更新同事务写入 stock-restore Outbox；下单过程失败的补偿由 `order_request` 的 COMPENSATING 状态 + 30 秒恢复调度逐项重试，全部回补成功后才置 FAILED
 
 **缓存健壮性**
 - `TwoLevelCacheService` Redis 读/写/删操作包裹 try-catch，Redis 故障时自动降级到 Caffeine → DB 路径
@@ -967,8 +987,12 @@ CloudBack/.claude/
 # MySQL + Redis 宿主机安装
 sudo apt install mysql-server redis-server
 
-# 初始化数据库
+# 初始化基础表（init.sql 未包含 order_request / inventory_operation）
 mysql -u root -p < sql/init.sql
+
+# 人工执行迁移（停机 + 备份，详见 sql/migrations/README.md 与 sql/migrations/20260910_order_request.md）
+mysql -u root -p cloud_mall < sql/migrations/20260907_inventory_operation.sql
+mysql -u root -p cloud_mall < sql/migrations/20260910_order_request.sql
 
 # 开放远程访问
 # MySQL: /etc/mysql/mysql.conf.d/mysqld.cnf → bind-address = 0.0.0.0
@@ -1004,10 +1028,10 @@ mvn spring-boot:run -pl cloud-payment
 ## 安全设计
 
 - **密码**：BCrypt 加密存储（Hutool），永不返回给前端
-- **JWT**：HMAC-SHA256 签名，2 小时过期，Gateway 全局校验
+- **JWT**：HMAC-SHA（256/384/512 随密钥长度自动选择）签名，2 小时过期，Gateway 全局校验
 - **用户隔离**：通过 `X-User-Id` 头实现，地址/订单/商品归属校验防止越权
 - **角色控制**：`X-User-Role` 头 + Service 层权限检查
-- **逻辑删除**：所有表使用 MyBatis-Plus `@TableLogic`，数据不可恢复
+- **逻辑删除**：业务表（user/address/category/product/order_info/order_item/payment）使用 MyBatis-Plus `@TableLogic`；outbox_message、order_request、inventory_operation 无逻辑删除
 - **雪花 ID**：JacksonConfig 将 Long 序列化为 String，防止前端精度丢失
 
 ## 常见问题
@@ -1056,8 +1080,8 @@ Alipay async notification is the primary confirmation path; the browser return i
 
 1. Before a new page-pay form is created, the payment service actively queries Alipay for an existing pending record. This avoids sending a paid trade back to Alipay and receiving TRADE_HAS_SUCCESS.
 2. GET /api/payment/{orderNo} also performs a rate-limited active query for a pending payment. POST /api/payment/{orderNo}/sync is the authenticated explicit reconciliation endpoint.
-3. PaymentReconciliationScheduler starts ten seconds after cloud-payment starts, then runs every 30 seconds. It scans at most 20 pending payments created in the most recent 30 minutes, atomically claims each record through last_sync_time, and reconciles it with Alipay.
-4. TRADE_SUCCESS and TRADE_FINISHED mark the record paid idempotently. TRADE_CLOSED marks a still-pending local payment closed. The scheduler does not replace refund handling or manual investigation for transactions outside its 30-minute payment window.
+3. PaymentReconciliationScheduler starts ten seconds after cloud-payment starts, then runs every 30 seconds. It scans up to 20 pending payments whose last sync is older than 30 seconds, atomically claims each record through last_sync_time, and reconciles it with Alipay.
+4. TRADE_SUCCESS and TRADE_FINISHED mark the record paid idempotently. TRADE_CLOSED marks a still-pending local payment closed. The scheduler reconciles all pending (unpaid) payments regardless of age; refunds are not handled.
 
 For an already-paid order that still appears unpaid, restart the payment service after its middleware is healthy, wait for a reconciliation cycle, then refresh the order list. Do not directly update order or payment rows to simulate a payment.
 
@@ -1077,7 +1101,7 @@ The payment.order_no index is expected to be unique (uk_order_no) so a payment r
 ### Reliable stock and message delivery
 
 - Product stock deduction/restoration endpoints are internal-only and require X-Internal-Token.
-- An order cancellation or timeout first attempts stock restoration. A failed restoration is persisted as a stock-restore Outbox message; the consumer uses a Redis idempotency key before calling the product service.
+- An order cancellation or timeout writes stock-restore Outbox messages in the same transaction; the consumer calls the product service, where the inventory_operation ledger (EMPTY/RESERVED/RESTORED) makes restoration idempotent inside the product database transaction.
 - Order creation, payment-result propagation, and stock restoration use Outbox delivery. A sender conditionally claims records from PENDING to SENDING; messages stuck in SENDING are recovered after the timeout and retried with backoff. This prevents multiple service instances from sending the same message concurrently.
 
 ### Verification
