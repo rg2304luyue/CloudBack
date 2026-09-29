@@ -13,10 +13,12 @@ import org.cloudback.common.result.R;
 import org.cloudback.common.result.ResultCode;
 import org.cloudback.common.utils.JwtUtil;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 认证服务实现，处理注册和登录逻辑。
@@ -31,7 +33,13 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class AuthServiceImpl implements AuthService {
 
+    /** 连续登录失败达到该次数后锁定 */
+    private static final int MAX_LOGIN_FAIL = 5;
+    /** 登录失败计数的锁定时长（分钟） */
+    private static final long LOGIN_LOCK_MINUTES = 15;
+
     private final UserMapper userMapper;
+    private final StringRedisTemplate stringRedisTemplate;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -83,16 +91,21 @@ public class AuthServiceImpl implements AuthService {
         }
 
         username = username.trim();
+        String failKey = SystemConstants.LOGIN_FAIL_KEY + username;
+        checkLoginAllowed(failKey, username);
         log.info("登录请求: username={}", username);
 
         User user = userMapper.selectOne(
                 new LambdaQueryWrapper<User>().eq(User::getUsername, username)
         );
+        // 用户不存在与密码错误统一提示，防止用户名枚举
         if (user == null) {
-            throw new BusinessException(ResultCode.USER_NOT_EXIST);
+            recordLoginFail(failKey, username);
+            throw new BusinessException(ResultCode.USERNAME_OR_PASSWORD_ERROR);
         }
 
         if (!BCrypt.checkpw(password, user.getPassword())) {
+            recordLoginFail(failKey, username);
             throw new BusinessException(ResultCode.USERNAME_OR_PASSWORD_ERROR);
         }
 
@@ -100,6 +113,8 @@ public class AuthServiceImpl implements AuthService {
         if (!SystemConstants.USER_STATUS_NORMAL.equals(user.getStatus())) {
             throw new BusinessException("账号已被禁用");
         }
+
+        clearLoginFail(failKey);
 
         String role = user.getRole();
         if (role == null) {
@@ -111,5 +126,38 @@ public class AuthServiceImpl implements AuthService {
                 Map.of("role", role));
         log.info("用户登录成功: username={}", username);
         return R.ok("登录成功", token);
+    }
+
+    /** 校验登录失败次数，达到上限则拒绝（Redis 故障时放行，不阻断登录） */
+    private void checkLoginAllowed(String failKey, String username) {
+        try {
+            String value = stringRedisTemplate.opsForValue().get(failKey);
+            if (value != null && Integer.parseInt(value) >= MAX_LOGIN_FAIL) {
+                throw new BusinessException("失败次数过多，请15分钟后再试");
+            }
+        } catch (BusinessException e) {
+            throw e;
+        } catch (Exception e) {
+            log.warn("读取登录失败计数失败，放行本次登录: username={}, error={}", username, e.getMessage());
+        }
+    }
+
+    /** 记录一次登录失败：每次失败都续期，使其变为真正的滑动窗口（Redis 故障仅记日志） */
+    private void recordLoginFail(String failKey, String username) {
+        try {
+            stringRedisTemplate.opsForValue().increment(failKey);
+            stringRedisTemplate.expire(failKey, LOGIN_LOCK_MINUTES, TimeUnit.MINUTES);
+        } catch (Exception e) {
+            log.warn("记录登录失败计数失败: username={}, error={}", username, e.getMessage());
+        }
+    }
+
+    /** 登录成功后清除失败计数（Redis 故障仅记日志） */
+    private void clearLoginFail(String failKey) {
+        try {
+            stringRedisTemplate.delete(failKey);
+        } catch (Exception e) {
+            log.warn("清除登录失败计数失败: key={}, error={}", failKey, e.getMessage());
+        }
     }
 }

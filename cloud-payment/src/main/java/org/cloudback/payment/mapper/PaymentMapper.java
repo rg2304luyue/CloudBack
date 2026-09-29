@@ -21,4 +21,10 @@ public interface PaymentMapper extends BaseMapper<Payment> {
     int claimSync(@Param("id") Long id,
                   @Param("cutoff") LocalDateTime cutoff,
                   @Param("claimedAt") LocalDateTime claimedAt);
+
+    /** 反向对账抢占：仅已支付记录，复用 lastSyncTime 节流 */
+    @Update("UPDATE payment SET last_sync_time = #{claimedAt} WHERE id = #{id} AND status = 1 AND (last_sync_time IS NULL OR last_sync_time <= #{cutoff})")
+    int claimPaidSync(@Param("id") Long id,
+                      @Param("cutoff") LocalDateTime cutoff,
+                      @Param("claimedAt") LocalDateTime claimedAt);
 }

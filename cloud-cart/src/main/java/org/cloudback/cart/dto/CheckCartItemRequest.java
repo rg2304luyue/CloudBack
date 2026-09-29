@@ -1,3 +1,8 @@
 package org.cloudback.cart.dto;
 
-public record CheckCartItemRequest(Boolean checked) {}
+import jakarta.validation.constraints.NotNull;
+
+public record CheckCartItemRequest(
+        @NotNull(message = "checked不能为空")
+        Boolean checked
+) {}

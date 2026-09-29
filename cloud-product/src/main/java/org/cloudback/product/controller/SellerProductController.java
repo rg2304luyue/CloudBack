@@ -1,5 +1,6 @@
 package org.cloudback.product.controller;
 
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.cloudback.common.result.R;
 import org.cloudback.product.dto.ProductRequest;
@@ -27,7 +28,7 @@ public class SellerProductController {
     @PostMapping
     public R<String> addProduct(@RequestHeader("X-User-Id") Long userId,
                                 @RequestHeader("X-User-Role") String role,
-                                @RequestBody ProductRequest request) {
+                                @Valid @RequestBody ProductRequest request) {
         return productService.addProduct(userId, role, request);
     }
 
@@ -36,7 +37,7 @@ public class SellerProductController {
     public R<String> updateProduct(@RequestHeader("X-User-Id") Long userId,
                                    @RequestHeader("X-User-Role") String role,
                                    @PathVariable Long id,
-                                   @RequestBody ProductRequest request) {
+                                   @Valid @RequestBody ProductRequest request) {
         return productService.updateProduct(userId, role, id, request);
     }
 

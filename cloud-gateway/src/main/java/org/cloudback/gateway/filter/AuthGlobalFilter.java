@@ -1,9 +1,11 @@
 package org.cloudback.gateway.filter;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.jsonwebtoken.Claims;
 import lombok.extern.slf4j.Slf4j;
 import org.cloudback.common.constant.SystemConstants;
 import org.cloudback.common.utils.JwtUtil;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.cloud.gateway.filter.GlobalFilter;
 import org.springframework.core.Ordered;
@@ -18,6 +20,7 @@ import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -27,6 +30,9 @@ import java.util.Map;
 public class AuthGlobalFilter implements GlobalFilter, Ordered {
 
     private static final ObjectMapper objectMapper = new ObjectMapper();
+
+    @Value("${cloud.internal.token:}")
+    private String internalToken;
 
     private static final List<PublicRoute> PUBLIC_ROUTES = List.of(
             PublicRoute.exact(HttpMethod.POST, "/auth/login"),
@@ -48,8 +54,14 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
         String path = normalizePath(originalRequest.getURI().getPath());
         HttpMethod method = originalRequest.getMethod();
 
+        // internal/* 只允许服务间调用：网关注入 X-Internal-Token 后，任何登录用户都会通过校验，
+        // 因此必须在网关层直接拦截外部请求，避免任意用户查询他人订单状态/批量拉取商品。
+        if (isInternalPath(path)) {
+            return forbidden(exchange, "该路径不允许外部访问");
+        }
+
         if (isPublic(method, path)) {
-            ServerHttpRequest request = stripTrustedHeaders(originalRequest).build();
+            ServerHttpRequest request = withInternalToken(stripTrustedHeaders(originalRequest)).build();
             return chain.filter(exchange.mutate().request(request).build());
         }
 
@@ -59,22 +71,33 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
         }
 
         token = token.substring(SystemConstants.TOKEN_PREFIX.length());
-        Long userId = JwtUtil.getUserId(token);
-        String username = JwtUtil.getUsername(token);
-        String role = JwtUtil.getRole(token);
+        Claims claims = JwtUtil.parseToken(token);
+        if (claims == null) {
+            return unauthorized(exchange, "Token已过期，请重新登录");
+        }
+        Long userId = Long.valueOf(claims.getSubject());
+        String username = claims.get("username", String.class);
+        String role = claims.get("role", String.class);
         if (role == null) role = SystemConstants.ROLE_BUYER;
-
-        if (userId == null || JwtUtil.isTokenExpired(token)) {
+        if (claims.getExpiration().before(new Date())) {
             return unauthorized(exchange, "Token已过期，请重新登录");
         }
 
-        ServerHttpRequest request = stripTrustedHeaders(originalRequest)
+        ServerHttpRequest request = withInternalToken(stripTrustedHeaders(originalRequest))
                 .header("X-User-Id", String.valueOf(userId))
                 .header("X-Username", username)
                 .header(SystemConstants.USER_ROLE_HEADER, role)
                 .build();
 
         return chain.filter(exchange.mutate().request(request).build());
+    }
+
+    /** 为转发请求注入内部 Token（所有下游服务只信任携带该头的请求） */
+    private ServerHttpRequest.Builder withInternalToken(ServerHttpRequest.Builder builder) {
+        if (internalToken != null && !internalToken.isBlank()) {
+            builder.header(SystemConstants.INTERNAL_TOKEN_HEADER, internalToken);
+        }
+        return builder;
     }
 
     private ServerHttpRequest.Builder stripTrustedHeaders(ServerHttpRequest request) {
@@ -84,6 +107,10 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
             headers.remove(SystemConstants.USER_ROLE_HEADER);
             headers.remove(SystemConstants.INTERNAL_TOKEN_HEADER);
         });
+    }
+
+    private boolean isInternalPath(String path) {
+        return path != null && (path.startsWith("/internal/") || path.contains("/internal/"));
     }
 
     private boolean isPublic(HttpMethod method, String path) {
@@ -97,22 +124,30 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
         return path == null ? "" : path;
     }
 
-    private Mono<Void> unauthorized(ServerWebExchange exchange, String message) {
+    private Mono<Void> writeError(ServerWebExchange exchange, HttpStatus status, String message) {
         ServerHttpResponse response = exchange.getResponse();
-        response.setStatusCode(HttpStatus.UNAUTHORIZED);
+        response.setStatusCode(status);
         response.getHeaders().setContentType(MediaType.APPLICATION_JSON);
         Map<String, Object> bodyMap = new LinkedHashMap<>();
-        bodyMap.put("code", 401);
+        bodyMap.put("code", status.value());
         bodyMap.put("message", message);
         bodyMap.put("data", null);
         byte[] bodyBytes;
         try {
             bodyBytes = objectMapper.writeValueAsBytes(bodyMap);
         } catch (Exception e) {
-            bodyBytes = "{\"code\":401,\"message\":\"认证失败\"}".getBytes(StandardCharsets.UTF_8);
+            bodyBytes = "{\"code\":403,\"message\":\"禁止访问\"}".getBytes(StandardCharsets.UTF_8);
         }
         DataBuffer buffer = response.bufferFactory().wrap(bodyBytes);
         return response.writeWith(Mono.just(buffer));
+    }
+
+    private Mono<Void> forbidden(ServerWebExchange exchange, String message) {
+        return writeError(exchange, HttpStatus.FORBIDDEN, message);
+    }
+
+    private Mono<Void> unauthorized(ServerWebExchange exchange, String message) {
+        return writeError(exchange, HttpStatus.UNAUTHORIZED, message);
     }
 
     @Override

@@ -47,7 +47,7 @@ public class JwtUtil {
                 .claim("username", username)
                 .issuedAt(new Date())
                 .expiration(new Date(System.currentTimeMillis() + EXPIRE_SECONDS * 1000))
-                .signWith(getSecretKey());
+                .signWith(getSecretKey(), Jwts.SIG.HS256);
 
         if (extra != null && !extra.isEmpty()) {
             extra.forEach(builder::claim);
@@ -103,5 +103,12 @@ public class JwtUtil {
         Claims claims = parseToken(token);
         if (claims == null) return true;
         return claims.getExpiration().before(new Date());
+    }
+
+    /** 从 Token 中提取签发时间 */
+    public static Date getIssuedAt(String token) {
+        Claims claims = parseToken(token);
+        if (claims == null) return null;
+        return claims.getIssuedAt();
     }
 }

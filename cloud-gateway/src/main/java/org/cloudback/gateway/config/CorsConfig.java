@@ -1,15 +1,17 @@
 package org.cloudback.gateway.config;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.reactive.CorsWebFilter;
 import org.springframework.web.cors.reactive.UrlBasedCorsConfigurationSource;
 
+import java.util.Arrays;
 import java.util.List;
 
 /**
- * 跨域配置，允许前端（任意来源）跨域访问 Gateway。
+ * 跨域配置，允许来源通过 cloud.cors.allowed-origins 配置（逗号分隔）。
  * Gateway 基于 WebFlux，需使用 CorsWebFilter 而非传统 CorsFilter。
  *
  * @author CloudBack
@@ -18,14 +20,21 @@ import java.util.List;
 @Configuration
 public class CorsConfig {
 
+    @Value("${cloud.cors.allowed-origins:http://localhost:5173,http://127.0.0.1:5173}")
+    private String allowedOrigins;
+
     /**
      * 注册 CorsWebFilter。
-     * 开发环境放行所有来源；生产环境应改为配置具体的允许域名列表。
+     * 允许来源从配置读取，生产环境通过 CORS_ALLOWED_ORIGINS 环境变量收紧。
      */
     @Bean
     public CorsWebFilter corsWebFilter() {
         CorsConfiguration config = new CorsConfiguration();
-        config.setAllowedOriginPatterns(List.of("*"));
+        List<String> origins = Arrays.stream(allowedOrigins.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .toList();
+        config.setAllowedOriginPatterns(origins);
         config.setAllowedMethods(List.of("*"));
         config.setAllowedHeaders(List.of("*"));
         config.setAllowCredentials(true);

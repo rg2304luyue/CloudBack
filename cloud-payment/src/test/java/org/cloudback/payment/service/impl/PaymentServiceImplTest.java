@@ -13,12 +13,15 @@ import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.cloudback.common.constant.SystemConstants;
 import org.cloudback.common.service.OutboxService;
 import org.cloudback.payment.config.AlipayProperties;
+import org.cloudback.payment.feign.OrderFeignClient;
 import org.cloudback.payment.mapper.PaymentMapper;
 import org.cloudback.payment.model.entity.Payment;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.SimpleTransactionStatus;
 
 import java.math.BigDecimal;
 
@@ -38,7 +41,10 @@ class PaymentServiceImplTest {
         mapper = mock(PaymentMapper.class);
         alipay = mock(AlipayClient.class);
         outbox = mock(OutboxService.class);
-        service = new PaymentServiceImpl(mapper, alipay, new AlipayProperties(), mock(KafkaTemplate.class), outbox);
+        PlatformTransactionManager transactionManager = mock(PlatformTransactionManager.class);
+        when(transactionManager.getTransaction(any())).thenAnswer(ignored -> new SimpleTransactionStatus());
+        service = new PaymentServiceImpl(mapper, alipay, new AlipayProperties(), mock(KafkaTemplate.class),
+                outbox, mock(OrderFeignClient.class), transactionManager);
     }
 
     @Test

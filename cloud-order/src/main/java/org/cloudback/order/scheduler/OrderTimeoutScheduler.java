@@ -53,13 +53,13 @@ public class OrderTimeoutScheduler {
                 return;
             }
 
-            redisTemplate.opsForZSet().remove(key, expiredOrders.toArray());
-
             log.info("Redis ZSet 扫描到 {} 个超时订单", expiredOrders.size());
             for (Object obj : expiredOrders) {
                 String orderNo = (String) obj;
                 try {
+                    // 先取消成功再从 ZSet 移除；失败的留在 ZSet 等下一轮重试
                     orderService.cancelOrderByNo(orderNo);
+                    redisTemplate.opsForZSet().remove(key, orderNo);
                     log.info("自动取消超时订单: orderNo={}", orderNo);
                 } catch (Exception e) {
                     log.error("Redis取消超时订单失败, orderNo={}", orderNo, e);

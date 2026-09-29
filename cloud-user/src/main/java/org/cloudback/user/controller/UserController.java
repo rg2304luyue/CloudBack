@@ -1,5 +1,6 @@
 package org.cloudback.user.controller;
 
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.cloudback.common.entity.User;
@@ -39,7 +40,7 @@ public class UserController {
     /** 更新当前用户信息 */
     @PatchMapping("/me")
     public R<String> updateUserInfo(@RequestHeader("X-User-Id") Long userId,
-                                    @RequestBody UpdateUserRequest request) {
+                                    @Valid @RequestBody UpdateUserRequest request) {
         return userService.updateUserInfo(userId, request.nickname(), request.phone(), request.email(), request.avatar());
     }
 

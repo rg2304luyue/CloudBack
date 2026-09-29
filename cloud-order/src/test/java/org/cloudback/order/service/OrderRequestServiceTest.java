@@ -1,5 +1,6 @@
 package org.cloudback.order.service;
 
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import org.cloudback.common.exception.BusinessException;
 import org.cloudback.common.result.R;
 import org.cloudback.order.feign.ProductFeignClient;
@@ -38,7 +39,8 @@ class OrderRequestServiceTest {
 
     @BeforeEach
     void setUp() {
-        when(transactionManager.getTransaction(any())).thenAnswer(ignored -> new SimpleTransactionStatus());
+        // 校验失败路径在事务外完成且不持有所，通常不开事务，故设为宽松桩
+        lenient().when(transactionManager.getTransaction(any())).thenAnswer(ignored -> new SimpleTransactionStatus());
         lenient().when(requests.find(anyString())).thenAnswer(invocation -> tokenIs(invocation.getArgument(0)) ? stored.get() : null);
         lenient().when(requests.lock(anyString())).thenAnswer(invocation -> tokenIs(invocation.getArgument(0)) ? stored.get() : null);
         lenient().when(requests.update(any())).thenReturn(1);
@@ -70,6 +72,8 @@ class OrderRequestServiceTest {
         assertEquals("FAILED", stored.get().getStatus());
         assertNull(stored.get().getActiveUserId());
         verify(products).restoreStock(11L, 2, "order-1", "internal");
+        // 库存已退回：必须先取消可能已落库的孤儿订单，否则用户仍可支付造成超卖
+        verify(orders).update(isNull(), any(LambdaUpdateWrapper.class));
     }
 
     @Test

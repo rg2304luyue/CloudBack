@@ -18,6 +18,7 @@ public class OutboxService {
     private static final int STATUS_SENT = 1;
     private static final int STATUS_FAILED = 2;
     private static final int STATUS_SENDING = 3;
+    private static final int MAX_RETRIES = 5;
 
     private final OutboxMessageMapper outboxMessageMapper;
 
@@ -28,7 +29,7 @@ public class OutboxService {
         msg.setPayload(payload);
         msg.setStatus(STATUS_PENDING);
         msg.setRetryCount(0);
-        msg.setMaxRetries(5);
+        msg.setMaxRetries(MAX_RETRIES);
         msg.setCreateTime(LocalDateTime.now());
         outboxMessageMapper.insert(msg);
     }
@@ -68,25 +69,27 @@ public class OutboxService {
 
     public void markSent(Long id) {
         OutboxMessage msg = new OutboxMessage();
-        msg.setId(id);
         msg.setStatus(STATUS_SENT);
         msg.setNextRetryAt(null);
-        outboxMessageMapper.updateById(msg);
+        // 条件更新：仅允许从发送中(3)流转，影响 0 行说明已被 recover 或其他线程处理
+        int rows = outboxMessageMapper.update(msg, new LambdaUpdateWrapper<OutboxMessage>()
+                .eq(OutboxMessage::getId, id)
+                .eq(OutboxMessage::getStatus, STATUS_SENDING));
+        if (rows == 0) {
+            log.warn("markSent 未生效（消息可能已被 recover）: id={}", id);
+        }
     }
 
     public void markFailed(Long id, int retryCount) {
-        OutboxMessage msg = new OutboxMessage();
-        msg.setId(id);
-        msg.setRetryCount(retryCount + 1);
-        if (msg.getRetryCount() >= 5) {
-            msg.setStatus(STATUS_FAILED);
+        // 指数退避：2^retryCount 秒（retryCount 为自增后的次数）
+        long delaySeconds = (long) Math.pow(2, retryCount + 1);
+        LocalDateTime nextRetryAt = LocalDateTime.now().plusSeconds(delaySeconds);
+        int rows = outboxMessageMapper.markFailedAtomic(id, nextRetryAt, MAX_RETRIES);
+        if (rows == 0) {
+            log.warn("markFailed 未生效（消息可能已被其他线程处理）: id={}", id);
+        } else if (retryCount + 1 >= MAX_RETRIES) {
             log.error("Outbox message permanently failed: id={}", id);
-        } else {
-            msg.setStatus(STATUS_PENDING);
-            long delaySeconds = (long) Math.pow(2, msg.getRetryCount());
-            msg.setNextRetryAt(LocalDateTime.now().plusSeconds(delaySeconds));
         }
-        outboxMessageMapper.updateById(msg);
     }
 
     public List<OutboxMessage> listFailed(int limit) {

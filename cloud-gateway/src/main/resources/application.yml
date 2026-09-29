@@ -11,8 +11,8 @@ spring:
       discovery:
         server-addr: ${NACOS_ADDR:${VM_HOST:localhost}:8848}
         namespace: ${NACOS_NAMESPACE:}
-        username: nacos
-        password: nacos
+        username: ${NACOS_USERNAME:nacos}
+        password: ${NACOS_PASSWORD:}
       config:
         server-addr: ${NACOS_ADDR:${VM_HOST:localhost}:8848}
         file-extension: yml
@@ -93,3 +93,9 @@ spring:
             - Path=/api/payment/**
           filters:
             - StripPrefix=1
+
+cloud:
+  internal:
+    token: ${CLOUD_INTERNAL_TOKEN:}
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173}

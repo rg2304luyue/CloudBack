@@ -30,6 +30,12 @@ public interface ProductService {
     /** 按卖家 ID 获取商品列表（仅返回 ID，供订单服务 Feign 内部调用） */
     R<List<Product>> getProductsBySellerId(Long sellerId);
 
+    /** 批量按 ID 查询商品（内部接口，供购物车价格/状态实时刷新） */
+    R<List<Product>> getProductsByIds(List<Long> ids);
+
+    /** 管理员更新商品上下架状态（0-下架, 1-上架），同步缓存与搜索索引 */
+    R<String> updateProductStatus(Long id, Integer status);
+
     /** Meilisearch 全文搜索，支持中文分词和拼写纠错，仅搜已上架商品 */
     R<List<Product>> search(String keyword, Long categoryId, int page, int size);
 

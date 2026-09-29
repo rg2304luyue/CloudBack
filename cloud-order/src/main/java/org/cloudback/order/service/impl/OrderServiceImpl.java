@@ -27,7 +27,9 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.DefaultTransactionDefinition;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -37,6 +39,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -61,7 +64,7 @@ public class OrderServiceImpl implements OrderService {
     private final PlatformTransactionManager transactionManager;
     private final OrderRequestService orderRequests;
 
-    @Value("${cloud.internal.token}")
+    @Value("${cloud.internal.token:}")
     private String internalToken;
 
     @Override
@@ -82,12 +85,16 @@ public class OrderServiceImpl implements OrderService {
         List<CartItemDTO> checkedItems = cartResult.getData();
         BigDecimal totalAmount = BigDecimal.ZERO;
         List<OrderItem> orderItems = new ArrayList<>();
+        Set<Long> sellerIds = new HashSet<>();
 
         for (CartItemDTO item : checkedItems) {
             if (item.getQuantity() == null || item.getQuantity() <= 0) {
                 throw new BusinessException("商品数量必须大于0, productId=" + item.getProductId());
             }
             ProductDTO product = loadPublishedProduct(item.getProductId());
+            if (product.getSellerId() != null) {
+                sellerIds.add(product.getSellerId());
+            }
             BigDecimal unitPrice = product.getPrice();
             if (unitPrice == null) {
                 throw new BusinessException("商品价格异常，无法下单，productId=" + item.getProductId());
@@ -106,6 +113,10 @@ public class OrderServiceImpl implements OrderService {
             orderItems.add(orderItem);
         }
 
+        if (sellerIds.size() > 1) {
+            throw new BusinessException("购物车中包含多个卖家的商品，请分开下单");
+        }
+
         Order order = new Order();
         order.setOrderNo(orderNo);
         order.setUserId(userId);
@@ -117,6 +128,12 @@ public class OrderServiceImpl implements OrderService {
         return order;
     }
 
+    /**
+     * 执行下单：
+     * 1) 先在事务外逐条调用库存扣减（远程调用不占数据库连接与行锁，幂等由 product 端 tombstone 保证）
+     * 2) 再在一个短事务内原子写入订单、明细与 outbox，并注册 afterCommit 副作用
+     *    （TransactionSynchronizationManager.registerSynchronization 要求存在活动事务，否则抛 IllegalStateException）
+     */
     private void executeOrder(Order order) {
         String orderNo = order.getOrderNo();
         for (OrderItem item : order.getOrderItems()) {
@@ -129,10 +146,16 @@ public class OrderServiceImpl implements OrderService {
             }
         }
 
-        saveOrderAndItems(order, order.getOrderItems());
-        saveOrderCreateOutbox(order, order.getUserId(), order.getTotalAmount());
-        registerAfterCommitSideEffects(order.getUserId(), order.getOrderItems().stream()
-                .map(OrderItem::getProductId).toList(), orderNo);
+        // 订单、明细、出库消息必须原子写入；afterCommit 副作用注册也必须在该事务内完成
+        DefaultTransactionDefinition definition = new DefaultTransactionDefinition(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        TransactionTemplate writeTx = new TransactionTemplate(transactionManager, definition);
+        writeTx.setTimeout(30);
+        writeTx.executeWithoutResult(status -> {
+            saveOrderAndItems(order, order.getOrderItems());
+            saveOrderCreateOutbox(order, order.getUserId(), order.getTotalAmount());
+            registerAfterCommitSideEffects(order.getUserId(), order.getOrderItems().stream()
+                    .map(OrderItem::getProductId).toList(), orderNo);
+        });
         log.info("Order created: orderNo={}, totalAmount={}", orderNo, order.getTotalAmount());
     }
 
@@ -259,8 +282,12 @@ public class OrderServiceImpl implements OrderService {
                 .orderByDesc(Order::getCreateTime));
         List<OrderItem> allItems = orderItemMapper.selectList(new LambdaQueryWrapper<OrderItem>().in(OrderItem::getOrderId, orderIds));
         Map<Long, List<OrderItem>> itemsMap = allItems.stream().collect(Collectors.groupingBy(OrderItem::getOrderId));
+        Set<Long> sellerProductIdSet = new HashSet<>(sellerProductIds);
         for (Order order : orders) {
-            order.setOrderItems(itemsMap.getOrDefault(order.getId(), Collections.emptyList()));
+            // 只暴露属于该卖家的明细，避免卖家看到其他卖家的商品行
+            order.setOrderItems(itemsMap.getOrDefault(order.getId(), Collections.emptyList()).stream()
+                    .filter(item -> sellerProductIdSet.contains(item.getProductId()))
+                    .collect(Collectors.toList()));
         }
         return R.ok(orders, (int) itemPage.getTotal());
     }
@@ -317,6 +344,21 @@ public class OrderServiceImpl implements OrderService {
     @Override
     public R<String> generateOrderToken(Long userId) {
         return R.ok(orderRequests.issue(userId));
+    }
+
+    @Override
+    public R<Map<String, Object>> getInternalOrderStatus(String orderNo) {
+        if (orderNo == null || orderNo.isBlank()) {
+            return R.fail("订单不存在");
+        }
+        Order order = orderMapper.selectOne(new LambdaQueryWrapper<Order>().eq(Order::getOrderNo, orderNo));
+        if (order == null) {
+            return R.fail("订单不存在");
+        }
+        Map<String, Object> data = new HashMap<>();
+        data.put("orderNo", order.getOrderNo());
+        data.put("status", order.getStatus());
+        return R.ok(data);
     }
 
     private ProductDTO loadPublishedProduct(Long productId) {
@@ -388,6 +430,17 @@ public class OrderServiceImpl implements OrderService {
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
+                // 可靠补偿：Feign 直调失败时由 cart 服务消费 cart-clear 幂等清理
+                try {
+                    JSONObject clearMsg = new JSONObject();
+                    clearMsg.put("userId", userId);
+                    clearMsg.put("productIds", orderedProductIds);
+                    outboxService.saveMessage(SystemConstants.KAFKA_TOPIC_CART_CLEAR,
+                            orderNo, clearMsg.toJSONString());
+                } catch (Exception e) {
+                    log.error("Persist cart-clear outbox failed: orderNo={}", orderNo, e);
+                }
+                // 快路径：直接清理，成功则消费者侧的幂等删除为无害空操作
                 for (Long productId : orderedProductIds) {
                     try {
                         cartFeignClient.removeItem(userId, productId);
@@ -422,6 +475,11 @@ public class OrderServiceImpl implements OrderService {
         for (OrderItem item : items) {
             saveStockRestoreMessage(order.getOrderNo(), order.getId(), item.getProductId(), item.getQuantity());
         }
+        // 与订单取消同事务写 outbox，通知支付服务关闭待支付单，防止取消后仍可支付造成资损
+        JSONObject closeMsg = new JSONObject();
+        closeMsg.put("orderNo", order.getOrderNo());
+        outboxService.saveMessage(SystemConstants.KAFKA_TOPIC_PAYMENT_CLOSE,
+                order.getOrderNo(), closeMsg.toJSONString());
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {

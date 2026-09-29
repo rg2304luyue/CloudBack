@@ -4,11 +4,13 @@ import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
+import org.cloudback.payment.feign.OrderFeignClient;
 import org.cloudback.payment.mapper.PaymentMapper;
 import org.cloudback.payment.model.entity.Payment;
 import org.cloudback.payment.service.PaymentService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.kafka.core.KafkaTemplate;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -20,7 +22,11 @@ import static org.mockito.Mockito.*;
 class PaymentReconciliationSchedulerTest {
     private final PaymentMapper mapper = mock(PaymentMapper.class);
     private final PaymentService service = mock(PaymentService.class);
-    private final PaymentReconciliationScheduler scheduler = new PaymentReconciliationScheduler(mapper, service);
+    private final OrderFeignClient orderFeignClient = mock(OrderFeignClient.class);
+    @SuppressWarnings("unchecked")
+    private final KafkaTemplate<String, String> kafkaTemplate = mock(KafkaTemplate.class);
+    private final PaymentReconciliationScheduler scheduler =
+            new PaymentReconciliationScheduler(mapper, service, orderFeignClient, kafkaTemplate);
 
     @BeforeEach
     void mapping() {

@@ -21,7 +21,7 @@ public interface OrderRequestMapper {
     int insert(OrderRequest request);
 
     @Update("UPDATE order_request SET active_user_id=#{activeUserId},status=#{status},snapshot=#{snapshot}," +
-            "failure_reason=#{failureReason},updated_at=#{updatedAt} WHERE token=#{token}")
+            "failure_reason=#{failureReason},compensate_count=#{compensateCount},updated_at=#{updatedAt} WHERE token=#{token}")
     int update(OrderRequest request);
 
     @Select("SELECT token FROM order_request WHERE (status='PROCESSING' AND updated_at < #{processingBefore}) " +

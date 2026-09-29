@@ -10,6 +10,7 @@ import org.cloudback.order.service.OrderRequestService;
 import org.cloudback.order.service.OrderService;
 import org.springframework.web.bind.annotation.*;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 订单控制器，提供下单、订单查询、取消订单接口。
@@ -79,5 +80,11 @@ public class OrderController {
     @GetMapping("/token")
     public R<String> getOrderToken(@RequestHeader("X-User-Id") Long userId) {
         return orderService.generateOrderToken(userId);
+    }
+
+    /** GET /orders/internal/status — 内部接口：按订单号查询订单状态（支付服务发起支付前校验） */
+    @GetMapping("/internal/status")
+    public R<Map<String, Object>> getInternalOrderStatus(@RequestParam String orderNo) {
+        return orderService.getInternalOrderStatus(orderNo);
     }
 }

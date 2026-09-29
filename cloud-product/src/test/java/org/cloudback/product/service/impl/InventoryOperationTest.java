@@ -8,6 +8,7 @@ import org.cloudback.common.config.TwoLevelCacheService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.*;
 
@@ -85,10 +86,14 @@ class InventoryOperationTest {
         verifyNoInteractions(products);
     }
 
-    @Test void failedRestoreDoesNotCloseReservedRecord() {
+    /**
+     * 商品已删除/销量异常时不再抛异常：仍标记 RESTORED 保证幂等，
+     * 避免订单端补偿永久重试把用户锁死。仅限 DB 异常等真正失败才抛出。
+     */
+    @Test void failedRestoreStillClosesReservedRecordForIdempotency() {
         state("RESERVED", 2);
-        assertThrows(BusinessException.class, () -> service.restoreStock(1L, 2, "o1"));
-        verify(operations, never()).setState(anyString(), anyLong(), anyString());
+        assertDoesNotThrow(() -> service.restoreStock(1L, 2, "o1"));
+        verify(operations).setState("o1", 1L, "RESTORED");
     }
 
     @Test void invalidInputRejectedBeforeDatabase() {

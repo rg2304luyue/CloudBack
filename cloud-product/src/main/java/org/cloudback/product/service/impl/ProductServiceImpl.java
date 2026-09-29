@@ -57,16 +57,13 @@ public class ProductServiceImpl implements ProductService {
         }
 
         String key = SystemConstants.REDIS_KEY_PREFIX + "product:detail:" + productId;
+        // dbLoader 返回 null（不存在/已删除/未上架），由 TwoLevelCacheService 缓存空哨兵防穿透
         Product product = productDetailTwoLevel.get(key, Product.class, () -> {
             Product p = productMapper.selectById(productId);
-            if (!isPublished(p)) {
-                throw new BusinessException(ResultCode.PRODUCT_NOT_EXIST);
-            }
-            return p;
+            return isPublished(p) ? p : null;
         }, 300);
 
-        if (!isPublished(product)) {
-            productDetailTwoLevel.evict(key);
+        if (product == null) {
             throw new BusinessException(ResultCode.PRODUCT_NOT_EXIST);
         }
 
@@ -179,6 +176,42 @@ public class ProductServiceImpl implements ProductService {
     }
 
     @Override
+    public R<List<Product>> getProductsByIds(List<Long> ids) {
+        if (ids == null || ids.isEmpty()) {
+            return R.ok(Collections.emptyList());
+        }
+        List<Long> distinctIds = ids.stream()
+                .filter(Objects::nonNull)
+                .distinct()
+                .collect(Collectors.toList());
+        if (distinctIds.isEmpty()) {
+            return R.ok(Collections.emptyList());
+        }
+        return R.ok(productMapper.selectBatchIds(distinctIds));
+    }
+
+    @Override
+    public R<String> updateProductStatus(Long id, Integer status) {
+        Product dbProduct = productMapper.selectById(id);
+        if (dbProduct == null) {
+            throw new BusinessException(ResultCode.PRODUCT_NOT_EXIST);
+        }
+        Product update = new Product();
+        update.setId(id);
+        update.setStatus(status);
+        productMapper.updateById(update);
+        evictProductAfterCommit(id);
+
+        Product updatedProduct = productMapper.selectById(id);
+        if (isPublished(updatedProduct)) {
+            searchService.indexProduct(updatedProduct);
+        } else {
+            searchService.deleteProduct(id);
+        }
+        return R.ok("状态更新成功");
+    }
+
+    @Override
     public R<List<Product>> search(String keyword, Long categoryId, int page, int size) {
         List<Long> searchIds = searchService.search(keyword, categoryId, page, size);
         if (searchIds.isEmpty()) {
@@ -209,6 +242,7 @@ public class ProductServiceImpl implements ProductService {
         productMapper.insert(product);
         bloomFilter.addProductId(product.getId());
         hotProductsTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:hot");
+        evictProductIdListCache();
 
         if (SystemConstants.PRODUCT_STATUS_PUBLISHED.equals(product.getStatus())) {
             searchService.indexProduct(product);
@@ -257,6 +291,7 @@ public class ProductServiceImpl implements ProductService {
         productMapper.deleteById(id);
         hotProductsTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:hot");
         productDetailTwoLevel.evict(SystemConstants.REDIS_KEY_PREFIX + "product:detail:" + id);
+        evictProductIdListCache();
         searchService.deleteProduct(id);
         return R.ok("删除商品成功");
     }
@@ -311,7 +346,8 @@ public class ProductServiceImpl implements ProductService {
             throw new BusinessException(ResultCode.STOCK_INSUFFICIENT);
         }
         inventoryOperationMapper.setState(orderNo, productId, "RESERVED");
-        evictProductAfterCommit(productId);
+        // 库存变动不改变商品 ID 列表的成员，只影响详情/热点缓存；ID 列表依赖其自身 TTL 过期即可
+        evictProductAfterCommit(productId, false);
         return R.ok("扣减库存成功");
     }
 
@@ -325,9 +361,20 @@ public class ProductServiceImpl implements ProductService {
         if ("RESERVED".equals(operation.getState())) {
             int affected = productMapper.restoreStock(productId, quantity);
             if (affected == 0) {
-                throw new BusinessException("库存恢复失败，请核对商品及销量");
+                // 商品已删除或销量异常时跳过库存回补，但仍标记 RESTORED 保持幂等，
+                // 避免订单端补偿永久重试。仅 DB 异常等真正失败才抛出。
+                Product product = productMapper.selectById(productId);
+                if (product == null) {
+                    log.warn("商品不存在或已删除，跳过库存回补但仍标记恢复完成: productId={}, orderNo={}, quantity={}",
+                            productId, orderNo, quantity);
+                } else {
+                    // 销量被人工改库等异常场景：库存不会回流，属于需人工核对的资金/库存差异
+                    log.error("商品销量异常(sales={} < quantity={})，跳过库存回补但仍标记恢复完成，需人工核对: productId={}, orderNo={}",
+                            product.getSales(), quantity, productId, orderNo);
+                }
+            } else {
+                evictProductAfterCommit(productId, false);
             }
-            evictProductAfterCommit(productId);
         }
         // An early restore closes the key without adding inventory; a late deduct must fail.
         inventoryOperationMapper.setState(orderNo, productId, "RESTORED");
@@ -420,6 +467,14 @@ public class ProductServiceImpl implements ProductService {
     }
 
     private void evictProductAfterCommit(Long productId) {
+        evictProductAfterCommit(productId, true);
+    }
+
+    /**
+     * @param includeIdList 是否需要失效商品 ID 列表缓存；结构性变更（新增/删除/上下架/改资料）为 true，
+     *                      仅库存变动为 false（列表成员不变，避免高频下单路径反复扫描/广播）
+     */
+    private void evictProductAfterCommit(Long productId, boolean includeIdList) {
         String hotKey = SystemConstants.REDIS_KEY_PREFIX + "product:hot";
         String detailKey = SystemConstants.REDIS_KEY_PREFIX + "product:detail:" + productId;
         if (TransactionSynchronizationManager.isSynchronizationActive()) {
@@ -428,11 +483,26 @@ public class ProductServiceImpl implements ProductService {
                 public void afterCommit() {
                     hotProductsTwoLevel.evict(hotKey);
                     productDetailTwoLevel.evict(detailKey);
+                    if (includeIdList) {
+                        evictProductIdListCache();
+                    }
                 }
             });
         } else {
             hotProductsTwoLevel.evict(hotKey);
             productDetailTwoLevel.evict(detailKey);
+            if (includeIdList) {
+                evictProductIdListCache();
+            }
+        }
+    }
+
+    /** 按模式失效所有商品 ID 列表缓存（cloud:product:ids:*），并跨实例广播 L1 失效 */
+    private void evictProductIdListCache() {
+        try {
+            productIdListTwoLevel.evictByPattern(SystemConstants.REDIS_KEY_PREFIX + "product:ids:*");
+        } catch (Exception e) {
+            log.warn("Evict product id list cache failed: {}", e.getMessage());
         }
     }
 }

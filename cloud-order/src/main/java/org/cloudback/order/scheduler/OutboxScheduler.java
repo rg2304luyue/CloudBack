@@ -23,7 +23,10 @@ public class OutboxScheduler {
     private static final int BATCH_SIZE = 20;
     private static final List<String> TOPICS = List.of(
             SystemConstants.KAFKA_TOPIC_ORDER_CREATE,
-            SystemConstants.KAFKA_TOPIC_STOCK_RESTORE
+            SystemConstants.KAFKA_TOPIC_STOCK_RESTORE,
+            SystemConstants.KAFKA_TOPIC_PAYMENT_CLOSE,
+            SystemConstants.KAFKA_TOPIC_REFUND_REQUEST,
+            SystemConstants.KAFKA_TOPIC_CART_CLEAR
     );
 
     @Scheduled(fixedRate = 5000)

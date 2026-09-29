@@ -135,6 +135,7 @@ public class SearchServiceImpl implements SearchService {
                     SearchRequest.builder()
                             .q(prefix)
                             .limit(limit)
+                            .filter(new String[]{"status = 1"})
                             .attributesToRetrieve(new String[]{"name"})
                             .build()
             );

@@ -8,6 +8,7 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.cloudback.common.constant.SystemConstants;
+import org.cloudback.common.service.OutboxService;
 import org.cloudback.order.mapper.OrderMapper;
 import org.cloudback.order.model.entity.Order;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -28,6 +29,7 @@ import java.time.LocalDateTime;
 public class PaymentResultConsumer {
 
     private final OrderMapper orderMapper;
+    private final OutboxService outboxService;
 
     /** 消费支付结果消息：解析 orderNo + status → 仅 SUCCESS 且当前 UNPAID 时更新为 PAID（条件 UPDATE 防覆盖） */
     @KafkaListener(topics = SystemConstants.KAFKA_TOPIC_PAYMENT_RESULT, groupId = "order-consumer-group")
@@ -75,7 +77,14 @@ public class PaymentResultConsumer {
                 if (order != null && SystemConstants.ORDER_STATUS_CANCELLED.equals(order.getStatus())) {
                     order.setRemark("[需退款] 支付成功但订单已取消, tradeNo=" + tradeNo);
                     orderMapper.updateById(order);
-                    log.error("支付-取消竞态：订单已取消但支付成功，已标记需退款 orderNo={}, tradeNo={}", orderNo, tradeNo);
+                    // 写 outbox 通知支付服务自动退款（消费者失败会重投，支付端按 out_request_no 幂等）
+                    JSONObject refundMsg = new JSONObject();
+                    refundMsg.put("orderNo", orderNo);
+                    refundMsg.put("tradeNo", tradeNo);
+                    refundMsg.put("amount", order.getTotalAmount());
+                    outboxService.saveMessage(SystemConstants.KAFKA_TOPIC_REFUND_REQUEST,
+                            orderNo, refundMsg.toJSONString());
+                    log.error("支付-取消竞态：订单已取消但支付成功，已标记需退款并发起退款请求 orderNo={}, tradeNo={}", orderNo, tradeNo);
                 } else {
                     log.warn("订单状态更新影响0行, 可能已被处理或状态不匹配: orderNo={}", orderNo);
                 }

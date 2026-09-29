@@ -28,4 +28,10 @@ public interface PaymentService {
 
     /** 处理支付宝异步通知：RSA2 验签 → 校验金额 → 匹配交易状态 → 更新本地状态并通知订单服务 */
     String handleAlipayNotify(Map<String, String> params);
+
+    /** 订单取消联动：条件关闭待支付单（已支付则记录日志走退款流程，已关闭幂等返回） */
+    R<String> closePayment(String orderNo);
+
+    /** 支付成功但订单已取消：调支付宝退款并置为已退款（out_request_no=orderNo 幂等，失败抛异常重试） */
+    R<String> refundByOrder(String orderNo, String tradeNo);
 }

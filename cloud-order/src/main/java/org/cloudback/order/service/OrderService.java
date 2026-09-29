@@ -3,6 +3,7 @@ package org.cloudback.order.service;
 import org.cloudback.common.result.R;
 import org.cloudback.order.model.entity.Order;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 订单服务接口，提供下单、订单查询、取消订单功能。
@@ -44,4 +45,7 @@ public interface OrderService {
 
     /** 确认收货（已发货 → 已完成） */
     R<String> receiveOrder(Long userId, Long orderId);
+
+    /** 内部接口：按订单号查询订单状态（供支付服务等内部服务校验，需内部令牌） */
+    R<Map<String, Object>> getInternalOrderStatus(String orderNo);
 }

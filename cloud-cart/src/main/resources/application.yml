@@ -8,13 +8,22 @@ spring:
     redis:
       host: ${REDIS_ADDR:${VM_HOST:localhost}}
       port: ${REDIS_PORT:6379}
-      password: ${REDIS_PASSWORD:redis123}
+      password: ${REDIS_PASSWORD:}
+  kafka:
+    bootstrap-servers: ${KAFKA_ADDR:${VM_HOST:localhost}:9092}
+    consumer:
+      group-id: cart-consumer-group
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: "org.cloudback.**"
   cloud:
     nacos:
       discovery:
         server-addr: ${NACOS_ADDR:${VM_HOST:localhost}:8848}
-        username: nacos
-        password: nacos
+        username: ${NACOS_USERNAME:nacos}
+        password: ${NACOS_PASSWORD:}
       config:
         server-addr: ${NACOS_ADDR:${VM_HOST:localhost}:8848}
         file-extension: yml
@@ -25,4 +34,8 @@ spring:
       eager: true
 
 knife4j:
-  enable: true
+  enable: ${KNIFE4J_ENABLE:false}
+
+cloud:
+  internal:
+    token: ${CLOUD_INTERNAL_TOKEN:}

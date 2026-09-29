@@ -4,6 +4,7 @@ import com.alibaba.fastjson2.JSON;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.cloudback.cart.dto.CartItem;
+import org.cloudback.cart.dto.ProductInfo;
 import org.cloudback.cart.feign.ProductFeignClient;
 import org.cloudback.cart.service.CartService;
 import org.cloudback.common.config.TwoLevelCacheService;
@@ -16,10 +17,12 @@ import org.redisson.api.RedissonClient;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
@@ -172,7 +175,7 @@ public class CartServiceImpl implements CartService {
             }
 
             CartItem cartItem = JSON.parseObject(existing.toString(), CartItem.class);
-            cartItem.setChecked(checked);
+            cartItem.setChecked(Boolean.TRUE.equals(checked));
             redisTemplate.opsForHash().put(key, field, JSON.toJSONString(cartItem));
             evictCartCache(userId);
         } finally {
@@ -180,7 +183,7 @@ public class CartServiceImpl implements CartService {
                 lock.unlock();
             }
         }
-        return R.ok(checked ? "已勾选" : "已取消勾选");
+        return R.ok(Boolean.TRUE.equals(checked) ? "已勾选" : "已取消勾选");
     }
 
     /** 批量勾选/取消勾选所有商品（分布式锁保护并发） */
@@ -199,7 +202,7 @@ public class CartServiceImpl implements CartService {
 
             for (Map.Entry<Object, Object> entry : entries.entrySet()) {
                 CartItem cartItem = JSON.parseObject(entry.getValue().toString(), CartItem.class);
-                cartItem.setChecked(checked);
+                cartItem.setChecked(Boolean.TRUE.equals(checked));
                 redisTemplate.opsForHash().put(key, entry.getKey(), JSON.toJSONString(cartItem));
             }
 
@@ -209,7 +212,7 @@ public class CartServiceImpl implements CartService {
                 lock.unlock();
             }
         }
-        return R.ok(checked ? "已全选" : "已取消全选");
+        return R.ok(Boolean.TRUE.equals(checked) ? "已全选" : "已取消全选");
     }
 
     /** 清空购物车（DEL 整个 Key，分布式锁保护并发） */
@@ -229,7 +232,7 @@ public class CartServiceImpl implements CartService {
         return R.ok("购物车已清空");
     }
 
-    /** 获取全部购物车商品（HGETALL），按 productId 排序 */
+    /** 获取全部购物车商品（HGETALL），按 productId 排序；返回前用商品服务实时数据覆盖价格/状态/库存 */
     @Override
     public R<List<CartItem>> getCartList(Long userId) {
         String cacheKey = SystemConstants.REDIS_KEY_PREFIX + "cart:cache:" + userId;
@@ -245,7 +248,69 @@ public class CartServiceImpl implements CartService {
                     .collect(Collectors.toList());
         }, 300);
 
-        return R.ok(items != null ? items : Collections.emptyList());
+        if (items == null || items.isEmpty()) {
+            return R.ok(Collections.emptyList());
+        }
+        return R.ok(refreshWithRealtimeProducts(items));
+    }
+
+    /**
+     * 用商品服务实时数据瞬态覆盖返回对象的价格/状态/库存（不落库改快照）。
+     * 商品服务不可用时降级返回原快照；商品不存在/已删除时标记 status=0（前端置灰）。
+     */
+    private List<CartItem> refreshWithRealtimeProducts(List<CartItem> items) {
+        List<Long> ids = items.stream()
+                .map(CartItem::getProductId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList());
+
+        Map<Long, ProductInfo> productMap = null;
+        if (!ids.isEmpty()) {
+            try {
+                R<List<ProductInfo>> result = productFeignClient.getProductsByIds(ids);
+                if (result.getCode() == 200 && result.getData() != null) {
+                    productMap = result.getData().stream()
+                            .filter(p -> p != null && p.getId() != null)
+                            .collect(Collectors.toMap(ProductInfo::getId, p -> p, (a, b) -> a));
+                } else {
+                    log.warn("批量查询商品信息失败，降级使用购物车快照: code={}", result.getCode());
+                }
+            } catch (Exception e) {
+                log.warn("批量查询商品信息异常，降级使用购物车快照: error={}", e.getMessage());
+            }
+        }
+
+        // 拷贝后再覆盖，避免污染 L1/L2 缓存中的共享对象
+        List<CartItem> result = new ArrayList<>(items.size());
+        for (CartItem item : items) {
+            CartItem copy = copyItem(item);
+            if (productMap != null) {
+                ProductInfo p = productMap.get(item.getProductId());
+                if (p == null) {
+                    // 商品不存在（已删除），标记下架，前端置灰
+                    copy.setStatus(0);
+                } else {
+                    copy.setPrice(p.getPrice());
+                    copy.setStatus(p.getStatus());
+                    copy.setStock(p.getStock());
+                }
+            }
+            result.add(copy);
+        }
+        return result;
+    }
+
+    private CartItem copyItem(CartItem item) {
+        CartItem copy = new CartItem();
+        copy.setProductId(item.getProductId());
+        copy.setName(item.getName());
+        copy.setMainImage(item.getMainImage());
+        copy.setPrice(item.getPrice());
+        copy.setQuantity(item.getQuantity());
+        copy.setChecked(item.getChecked());
+        copy.setStatus(item.getStatus());
+        copy.setStock(item.getStock());
+        return copy;
     }
 
     /** 获取已勾选商品（下单时用），过滤 checked=true */
@@ -260,7 +325,7 @@ public class CartServiceImpl implements CartService {
             }
             return entries.values().stream()
                     .map(v -> JSON.parseObject(v.toString(), CartItem.class))
-                    .filter(CartItem::getChecked)
+                    .filter(item -> Boolean.TRUE.equals(item.getChecked()))
                     .collect(Collectors.toList());
         }, 300);
 

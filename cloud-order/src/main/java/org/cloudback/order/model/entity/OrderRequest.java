@@ -13,6 +13,8 @@ public class OrderRequest {
     private String status;
     private String snapshot;
     private String failureReason;
+    /** 库存补偿尝试次数，防止补偿无限重试锁死用户 */
+    private Integer compensateCount = 0;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
     private LocalDateTime expiresAt;

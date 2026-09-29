@@ -10,6 +10,7 @@ import org.cloudback.common.exception.BusinessException;
 import org.cloudback.common.mapper.UserMapper;
 import org.cloudback.common.result.R;
 import org.cloudback.common.result.ResultCode;
+import org.cloudback.common.service.TokenBlacklistService;
 import org.cloudback.user.mapper.AddressMapper;
 import org.cloudback.user.mapper.SellerApplicationMapper;
 import org.cloudback.user.model.entity.Address;
@@ -35,6 +36,7 @@ public class UserServiceImpl implements UserService {
     private final UserMapper userMapper;
     private final AddressMapper addressMapper;
     private final SellerApplicationMapper applicationMapper;
+    private final TokenBlacklistService tokenBlacklistService;
 
     /** 取消该用户的所有默认地址 */
     private void cancelDefaultAddress(Long userId) {
@@ -142,6 +144,8 @@ public class UserServiceImpl implements UserService {
         updateUser.setId(targetUserId);
         updateUser.setPassword(BCrypt.hashpw(newPassword, BCrypt.gensalt()));
         userMapper.updateById(updateUser);
+        // 密码重置后吊销该用户已签发的所有 token
+        tokenBlacklistService.disableUserTokens(targetUser.getUsername());
         return R.ok("密码重置成功");
     }
 

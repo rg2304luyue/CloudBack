@@ -1,5 +1,6 @@
 package org.cloudback.cart.controller;
 
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.cloudback.cart.dto.AddCartItemRequest;
 import org.cloudback.cart.dto.CartItem;
@@ -28,7 +29,7 @@ public class CartController {
     /** 添加商品到购物车 */
     @PostMapping("/items")
     public R<String> addItem(@RequestHeader("X-User-Id") Long userId,
-                             @RequestBody AddCartItemRequest request) {
+                             @Valid @RequestBody AddCartItemRequest request) {
         return cartService.addItem(userId, request.productId(), request.quantity());
     }
 
@@ -44,14 +45,14 @@ public class CartController {
     @PatchMapping("/items/{productId}/check")
     public R<String> checkItem(@RequestHeader("X-User-Id") Long userId,
                                @PathVariable Long productId,
-                               @RequestBody CheckCartItemRequest request) {
+                               @Valid @RequestBody CheckCartItemRequest request) {
         return cartService.checkItem(userId, productId, request.checked());
     }
 
     /** 批量勾选/取消勾选所有商品 */
     @PatchMapping("/items/check-all")
     public R<String> checkAllItems(@RequestHeader("X-User-Id") Long userId,
-                                   @RequestBody CheckAllCartItemsRequest request) {
+                                   @Valid @RequestBody CheckAllCartItemsRequest request) {
         return cartService.checkAllItems(userId, request.checked());
     }
 
