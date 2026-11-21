@@ -24,6 +24,7 @@ import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 @Slf4j
 @Component
@@ -33,6 +34,15 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
 
     @Value("${cloud.internal.token:}")
     private String internalToken;
+
+    /** 内部保留的路径段，任何外部请求都不得进入 */
+    private static final String INTERNAL_SEGMENT = "internal";
+
+    /** 库存扣减/回补：只允许 order 服务经 Feign 调用，外部用户一律 403 */
+    private static final Pattern STOCK_PATH = Pattern.compile("^/products/[0-9]{1,19}/stock/(deduct|restore)$");
+
+    /** 按卖家批量取商品：只允许 order 服务经 Feign 调用 */
+    private static final String SELLER_LOOKUP_PATH = "/products/seller";
 
     private static final List<PublicRoute> PUBLIC_ROUTES = List.of(
             PublicRoute.exact(HttpMethod.POST, "/auth/login"),
@@ -58,6 +68,13 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
         // 因此必须在网关层直接拦截外部请求，避免任意用户查询他人订单状态/批量拉取商品。
         if (isInternalPath(path)) {
             return forbidden(exchange, "该路径不允许外部访问");
+        }
+
+        // 库存扣减/回补与按卖家取商品的路径不含 /internal/ 段，网关注入 X-Internal-Token 后
+        // 控制器里的令牌校验对外部登录用户形同虚设（见 README：真正的边界是网关的 403）。
+        // 这里在鉴权前直接拦截，服务间调用不经过网关，因此不受影响。
+        if (isServiceOnlyPath(path)) {
+            return forbidden(exchange, "该接口仅供服务间调用");
         }
 
         if (isPublic(method, path)) {
@@ -109,19 +126,49 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
         });
     }
 
+    /**
+     * 内部路径按“路径段”判定：/internal/xxx 或 /xxx/internal/yyy 都算，但 /products/internalized 不算。
+     * 逐段比较可避免 contains("/internal/") 被编码、大小写或多余分隔符绕过的歧义。
+     */
     private boolean isInternalPath(String path) {
-        return path != null && (path.startsWith("/internal/") || path.contains("/internal/"));
+        if (path == null || path.isEmpty()) {
+            return false;
+        }
+        for (String segment : path.split("/")) {
+            if (INTERNAL_SEGMENT.equals(segment)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 只允许服务间调用的业务路径（不含 /internal/ 段，必须单独拦截） */
+    private boolean isServiceOnlyPath(String path) {
+        return STOCK_PATH.matcher(path).matches() || SELLER_LOOKUP_PATH.equals(path);
     }
 
     private boolean isPublic(HttpMethod method, String path) {
         return PUBLIC_ROUTES.stream().anyMatch(route -> route.matches(method, path));
     }
 
+    /**
+     * 归一化路径后再做任何判定：
+     * 去掉网关前缀 /api、折叠重复斜杠、去掉末尾斜杠。
+     * 否则 /api//products/1/stock/deduct 或 /products/1/stock/deduct/ 这类写法会绕过
+     * 下面的 403 判断，却仍可能被下游控制器匹配到。
+     */
     private String normalizePath(String path) {
-        if (path != null && path.startsWith("/api/")) {
-            return path.substring(4);
+        if (path == null || path.isEmpty()) {
+            return "";
         }
-        return path == null ? "" : path;
+        String normalized = path.startsWith("/api/") ? path.substring(4) : path;
+        while (normalized.contains("//")) {
+            normalized = normalized.replace("//", "/");
+        }
+        while (normalized.length() > 1 && normalized.endsWith("/")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        return normalized;
     }
 
     private Mono<Void> writeError(ServerWebExchange exchange, HttpStatus status, String message) {
@@ -170,7 +217,9 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
             String prefix = path.substring(0, path.indexOf("{id}"));
             if (!requestPath.startsWith(prefix)) return false;
             String tail = requestPath.substring(prefix.length());
-            return !tail.isBlank() && !tail.contains("/") && tail.chars().allMatch(Character::isDigit);
+            // 只接受 ASCII 数字：Character.isDigit 会把阿拉伯-印度数字、全角数字也判为数字，
+            // 与下游 Spring MVC 的 long 转换语义不一致。
+            return !tail.isEmpty() && tail.chars().allMatch(c -> c >= '0' && c <= '9');
         }
     }
 }
