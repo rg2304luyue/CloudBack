@@ -118,7 +118,7 @@ public class OrderRequestService {
         String state = request.getStatus();
         Order order = "SUCCEEDED".equals(state) ? completed(request) : null;
         return new OrderRequestResult(state, order == null ? null : order.getId().toString(),
-                request.getOrderNo(), message(state));
+                request.getOrderNo(), message(request));
     }
 
     public Order create(Long userId, String token, Function<String, Order> prepare, Consumer<Order> execute) {
@@ -317,11 +317,28 @@ public class OrderRequestService {
         if (requests.update(request) != 1) throw new BusinessException("下单请求状态保存失败");
     }
 
+    /**
+     * 终态文案以库里记录的 failure_reason 为准。
+     *
+     * <p>原因是 FAILED 有两个来源：补偿成功（库存真的退回去了）与补偿次数耗尽（库存没退，
+     * 已转人工）。此前两者共用一句「库存已恢复，可以重新下单」，会引导用户在库存尚未回补时
+     * 重复下单，从而二次占用同一份库存。</p>
+     */
+    private String message(OrderRequest request) {
+        String state = request == null ? null : request.getStatus();
+        if ("FAILED".equals(state) && request.getFailureReason() != null
+                && !request.getFailureReason().isBlank()) {
+            return request.getFailureReason();
+        }
+        return message(state);
+    }
+
     private String message(String state) {
-        return switch (state) {
+        return switch (state == null ? "" : state) {
             case "READY" -> "可以提交订单";
             case "SUCCEEDED" -> "下单成功";
-            case "FAILED" -> "下单未完成，库存已恢复，可以重新下单";
+            // 没有落库原因的兜底文案不能承诺"库存已恢复"
+            case "FAILED" -> "下单未完成，请查询订单列表确认结果后再操作";
             case "EXPIRED" -> "下单请求已过期，请重新获取";
             case "COMPENSATING" -> "正在恢复库存，请稍后查询";
             default -> "下单正在处理中，请稍后查询";

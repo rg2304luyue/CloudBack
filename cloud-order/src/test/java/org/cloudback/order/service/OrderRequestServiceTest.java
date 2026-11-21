@@ -146,6 +146,29 @@ class OrderRequestServiceTest {
     }
 
     @Test
+    void failedRequestReportsThePersistedReasonInsteadOfClaimingStockRestored() {
+        OrderRequest failed = request("FAILED");
+        failed.setFailureReason("库存自动恢复失败，请联系客服或等待人工处理");
+        stored.set(failed);
+
+        var result = service.result(7L, "token");
+
+        assertEquals("FAILED", result.status());
+        assertEquals("库存自动恢复失败，请联系客服或等待人工处理", result.message());
+        assertFalse(result.message().contains("库存已恢复"));
+    }
+
+    @Test
+    void failedRequestWithoutReasonNeverPromisesStockWasRestored() {
+        stored.set(request("FAILED"));
+
+        var result = service.result(7L, "token");
+
+        assertEquals("FAILED", result.status());
+        assertFalse(result.message().contains("库存已恢复"));
+    }
+
+    @Test
     void issuingDoesNotReturnAnExpiredRequestLockedByAnotherWorker() {
         OrderRequest expired = request("READY");
         expired.setExpiresAt(LocalDateTime.now().minusSeconds(1));
