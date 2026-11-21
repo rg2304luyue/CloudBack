@@ -22,8 +22,12 @@ public interface PaymentMapper extends BaseMapper<Payment> {
                   @Param("cutoff") LocalDateTime cutoff,
                   @Param("claimedAt") LocalDateTime claimedAt);
 
-    /** 反向对账抢占：仅已支付记录，复用 lastSyncTime 节流 */
-    @Update("UPDATE payment SET last_sync_time = #{claimedAt} WHERE id = #{id} AND status = 1 AND (last_sync_time IS NULL OR last_sync_time <= #{cutoff})")
+    /**
+     * 反向对账抢占：已支付(1) 以及可能已扣款的已失败(2)/已关闭(3)，复用 lastSyncTime 节流。
+     * 2/3 这两种状态是「订单取消后用户才在收银台付款」的落点，必须纳入抢占，
+     * 否则它们会被调度反复选中却永远抢不到，这笔钱就没有任何兜底。
+     */
+    @Update("UPDATE payment SET last_sync_time = #{claimedAt} WHERE id = #{id} AND status IN (1, 2, 3) AND (last_sync_time IS NULL OR last_sync_time <= #{cutoff})")
     int claimPaidSync(@Param("id") Long id,
                       @Param("cutoff") LocalDateTime cutoff,
                       @Param("claimedAt") LocalDateTime claimedAt);

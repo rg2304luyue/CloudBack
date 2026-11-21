@@ -90,7 +90,13 @@ public class PaymentServiceImpl implements PaymentService {
         }
 
         if (!SystemConstants.PAYMENT_STATUS_UNPAID.equals(payment.getStatus())) {
-            return R.ok(payment);
+            // 支付单已关闭/已失败但支付宝侧可能已经扣款：这里再确认一次并把迟付款收尾成退款。
+            // 覆盖「取消后用户在收银台付款」在异步通知丢失时的场景（回跳/轮询路径同样能兜住）。
+            if (!SystemConstants.PAYMENT_STATUS_PAID.equals(payment.getStatus())
+                    && !SystemConstants.PAYMENT_STATUS_REFUNDED.equals(payment.getStatus())) {
+                settleLatePaymentIfCharged(orderNo, payment);
+            }
+            return R.ok(selectCurrentPayment(orderNo));
         }
 
         log.info("本地状态待支付，主动查询支付宝: orderNo={}", orderNo);
@@ -143,6 +149,42 @@ public class PaymentServiceImpl implements PaymentService {
 
         // 重新从数据库读取，确保返回的是结果应用后的完整数据
         return R.ok(selectCurrentPayment(orderNo));
+    }
+
+    /**
+     * 对「已关闭/已失败」的支付单向支付宝确认一次交易状态；若确实已收款，走迟付款收尾（入账 + 退款）。
+     * 查单失败只记日志，不改变本地状态。
+     */
+    private void settleLatePaymentIfCharged(String orderNo, Payment payment) {
+        AlipayTradeQueryResponse response;
+        try {
+            AlipayTradeQueryRequest request = new AlipayTradeQueryRequest();
+            JSONObject biz = new JSONObject();
+            biz.put("out_trade_no", orderNo);
+            request.setBizContent(biz.toJSONString());
+            response = alipayClient.execute(request);
+        } catch (AlipayApiException e) {
+            log.warn("复核已关闭支付单的交易状态失败: orderNo={}", orderNo, e);
+            return;
+        }
+        if (response != null && response.isSuccess()
+                && ("TRADE_SUCCESS".equals(response.getTradeStatus())
+                || "TRADE_FINISHED".equals(response.getTradeStatus()))) {
+            BigDecimal amount = payment.getAmount() != null ? payment.getAmount()
+                    : parseAmount(response.getTotalAmount());
+            settleLatePaymentOnClosedOrder(payment, response.getTradeNo(), amount);
+        }
+    }
+
+    private BigDecimal parseAmount(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return new BigDecimal(value);
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     /** 创建待支付记录（Kafka 消费者触发）：幂等检查 → INSERT payment(status=0) */
@@ -307,7 +349,13 @@ public class PaymentServiceImpl implements PaymentService {
         // 4. 只确认已经被本地可靠处理的明确状态
         if ("TRADE_SUCCESS".equals(tradeStatus) || "TRADE_FINISHED".equals(tradeStatus)) {
             if (!markPaid(localPayment, tradeNo)) {
-                return "failure";
+                // 订单取消时 payment-close 已把支付单置为 CLOSED，用户此时才在收银台完成付款。
+                // 旧逻辑在这里直接回 failure，导致「钱到账、单已取消、无人退款」，且反向对账只扫
+                // status=1 永远发现不了。改为先入账再退款：入账独立事务，退款失败向上抛让支付宝重发。
+                if (!settleLatePaymentOnClosedOrder(localPayment, tradeNo, localPayment.getAmount())) {
+                    // 其他情况（例如同一订单收到不同交易号）保持原有语义：让支付宝重试并留下告警
+                    return "failure";
+                }
             }
             log.info("支付宝异步通知处理成功: orderNo={}, tradeNo={}", orderNo, tradeNo);
             return "success";
@@ -348,8 +396,10 @@ public class PaymentServiceImpl implements PaymentService {
             return R.ok("无支付记录");
         }
         if (SystemConstants.PAYMENT_STATUS_PAID.equals(current.getStatus())) {
-            log.error("订单取消到达时支付已完成，需走退款流程: orderNo={}", orderNo);
-            return R.ok("已支付，走退款流程");
+            log.error("订单取消到达时支付已完成，发起自动退款: orderNo={}", orderNo);
+            // 旧逻辑只记一条 error 就返回，没有任何地方真正退款；这里直接走幂等退款
+            // （out_request_no=orderNo），把「订单已取消但已付款」收敛到 REFUNDED。
+            return refundByOrder(orderNo, current.getTradeNo());
         }
         // 已关闭或其他终态：幂等
         return R.ok("支付单已关闭");
@@ -413,6 +463,49 @@ public class PaymentServiceImpl implements PaymentService {
         }
         log.info("退款成功: orderNo={}, amount={}", orderNo, payment.getAmount());
         return R.ok("退款成功");
+    }
+
+    /**
+     * 收尾「支付单已关闭(3) 或已失败(2) 之后才到账」的迟付款：按 {0,2,3} → 1 入账，再走幂等退款。
+     *
+     * <p>为什么入账要单独提交：退款一旦失败会抛异常，若入账和退款在同一个事务里，回滚会把
+     * 入账一起撤掉，本地就再也看不到这笔钱，对账也就无从发现。这里先用 REQUIRES_NEW 把
+     * 「确实收到钱」落库，再发起退款；退款失败向上抛出，交给支付宝重发通知与反向对账
+     * （现已覆盖 status=1 与 2/3）兜底。</p>
+     *
+     * <p>这里刻意不发 payment-result 消息：订单已经取消，把 SUCCESS 再推给订单服务没有意义
+     * （消费者只更新「待支付」订单），钱直接走退款回支付宝。</p>
+     *
+     * @return true 表示已按「迟付款」处理（调用方可以回 success 让支付宝停止重发）
+     */
+    private boolean settleLatePaymentOnClosedOrder(Payment payment, String tradeNo, BigDecimal amount) {
+        if (tradeNo == null || tradeNo.isBlank() || amount == null || amount.signum() <= 0) {
+            return false;
+        }
+        // 只处理「已关闭 / 已失败」的单：已支付(1) 上的不同交易号属于异常，不能在这里覆盖 tradeNo，
+        // 待支付(0) 的并发竞争交给 markPaid 自己的条件更新与重试语义。
+        if (!SystemConstants.PAYMENT_STATUS_CLOSED.equals(payment.getStatus())
+                && !SystemConstants.PAYMENT_STATUS_FAILED.equals(payment.getStatus())) {
+            return false;
+        }
+        Boolean settled = transaction().execute(tx -> paymentMapper.update(null,
+                new LambdaUpdateWrapper<Payment>()
+                        .eq(Payment::getOrderNo, payment.getOrderNo())
+                        .eq(Payment::getStatus, payment.getStatus())
+                        .set(Payment::getStatus, SystemConstants.PAYMENT_STATUS_PAID)
+                        .set(Payment::getTradeNo, tradeNo)
+                        .set(Payment::getPayTime, LocalDateTime.now())) > 0);
+        if (!Boolean.TRUE.equals(settled)) {
+            Payment current = selectCurrentPayment(payment.getOrderNo());
+            if (current == null || !SystemConstants.PAYMENT_STATUS_PAID.equals(current.getStatus())) {
+                log.error("迟付款入账失败，状态已被并发改变，交由对账兜底: orderNo={}", payment.getOrderNo());
+                return false;
+            }
+        }
+        log.warn("支付单已关闭后仍收到付款，已入账并转为退款: orderNo={}, tradeNo={}", payment.getOrderNo(), tradeNo);
+        // 退款失败会抛 BusinessException → notify 返回 failure 让支付宝重发，对账侧也会重试
+        refundByOrder(payment.getOrderNo(), tradeNo);
+        return true;
     }
 
     /** 标记支付成功：幂等检查 → 条件 UPDATE payment SET status=1 → 仅成功时 Kafka 通知订单服务 */

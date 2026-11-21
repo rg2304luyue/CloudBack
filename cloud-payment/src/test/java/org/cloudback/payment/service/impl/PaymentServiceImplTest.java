@@ -4,7 +4,9 @@ import com.alibaba.fastjson2.JSONObject;
 import com.alipay.api.AlipayApiException;
 import com.alipay.api.AlipayClient;
 import com.alipay.api.request.AlipayTradeQueryRequest;
+import com.alipay.api.request.AlipayTradeRefundRequest;
 import com.alipay.api.response.AlipayTradeQueryResponse;
+import com.alipay.api.response.AlipayTradeRefundResponse;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
@@ -24,6 +26,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.SimpleTransactionStatus;
 
 import java.math.BigDecimal;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -33,6 +36,7 @@ class PaymentServiceImplTest {
     private PaymentMapper mapper;
     private AlipayClient alipay;
     private OutboxService outbox;
+    private AlipayProperties alipayProperties;
     private PaymentServiceImpl service;
 
     @BeforeEach
@@ -43,7 +47,8 @@ class PaymentServiceImplTest {
         outbox = mock(OutboxService.class);
         PlatformTransactionManager transactionManager = mock(PlatformTransactionManager.class);
         when(transactionManager.getTransaction(any())).thenAnswer(ignored -> new SimpleTransactionStatus());
-        service = new PaymentServiceImpl(mapper, alipay, new AlipayProperties(), mock(KafkaTemplate.class),
+        alipayProperties = new AlipayProperties();
+        service = new PaymentServiceImpl(mapper, alipay, alipayProperties, mock(KafkaTemplate.class),
                 outbox, mock(OrderFeignClient.class), transactionManager);
     }
 
@@ -117,6 +122,64 @@ class PaymentServiceImplTest {
         doThrow(new IllegalStateException("outbox unavailable")).when(outbox).saveMessage(anyString(), anyString(), anyString());
 
         assertThrows(IllegalStateException.class, () -> service.syncPaymentStatus("order-test", 7L));
+    }
+
+    @Test
+    void cancelledOrderChargedLaterIsSettledThenRefunded() throws Exception {
+        // 订单取消把支付单置为 3(CLOSED)，用户此时才在收银台付款：
+        // 查询发现支付宝已收款 → 入账(status 3→1) → 走退款，而不是静默丢钱。
+        Payment closed = payment(3);
+        Payment paid = payment(1);
+        when(mapper.selectOne(any())).thenReturn(closed, paid, paid);
+        when(mapper.update(isNull(), any(Wrapper.class))).thenReturn(1);
+        AlipayTradeQueryResponse charged = new AlipayTradeQueryResponse();
+        charged.setCode("10000");
+        charged.setTradeStatus("TRADE_SUCCESS");
+        charged.setTradeNo("trade-late");
+        when(alipay.execute(any(AlipayTradeQueryRequest.class))).thenReturn(charged);
+        AlipayTradeRefundResponse refund = new AlipayTradeRefundResponse();
+        refund.setCode("10000");
+        when(alipay.execute(any(AlipayTradeRefundRequest.class))).thenReturn(refund);
+
+        service.syncPaymentStatus("order-test", 7L);
+
+        verify(alipay).execute(any(AlipayTradeRefundRequest.class));
+    }
+
+    @Test
+    void notifyForAlreadyClosedOrderStillReturnsFailureWhenRefundCannotProceed() throws Exception {
+        // 已关闭单收到付款但缺少交易号（异常通知）：不应假装成功，要回 failure 让支付宝重发
+        Payment closed = payment(3);
+        when(mapper.selectOne(any())).thenReturn(closed);
+        Map<String, String> params = new java.util.HashMap<>();
+        params.put("app_id", "test-app");
+        params.put("out_trade_no", "order-test");
+        params.put("trade_no", "");
+        params.put("trade_status", "TRADE_SUCCESS");
+        params.put("total_amount", "12.34");
+        alipayProperties.setAppId("test-app");
+
+        try (var signature = mockStatic(com.alipay.api.internal.util.AlipaySignature.class)) {
+            signature.when(() -> com.alipay.api.internal.util.AlipaySignature.rsaCheckV1(
+                    any(), any(), any(), any())).thenReturn(true);
+            assertEquals("failure", service.handleAlipayNotify(params));
+        }
+        verify(alipay, never()).execute(any(AlipayTradeRefundRequest.class));
+    }
+
+    @Test
+    void paidPaymentOnCancelledOrderIsRefundedByClosePayment() throws Exception {
+        Payment paid = payment(1);
+        // 第一次 update 是「关闭待支付单」影响 0 行（说明已支付）；第二次是退款后 1→4 成功
+        when(mapper.update(isNull(), any(Wrapper.class))).thenReturn(0, 1);
+        when(mapper.selectOne(any())).thenReturn(paid, paid);
+        AlipayTradeRefundResponse refund = new AlipayTradeRefundResponse();
+        refund.setCode("10000");
+        when(alipay.execute(any(AlipayTradeRefundRequest.class))).thenReturn(refund);
+
+        service.closePayment("order-test");
+
+        verify(alipay).execute(any(AlipayTradeRefundRequest.class));
     }
 
     private Payment payment(int status) {
