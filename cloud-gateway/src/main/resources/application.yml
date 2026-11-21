@@ -96,6 +96,7 @@ spring:
 
 cloud:
   internal:
-    token: ${CLOUD_INTERNAL_TOKEN:}
+    # 必填：缺失时启动失败，避免内部鉴权静默 fail-open（各服务与网关必须一致）
+    token: ${CLOUD_INTERNAL_TOKEN}
   cors:
     allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173}

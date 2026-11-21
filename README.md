@@ -178,7 +178,7 @@ MINIO_BUCKET=cloudmall-products
 MEILI_HOST=${VM_HOST}
 MEILI_PORT=7700
 MEILI_MASTER_KEY=<your-master-key>
-# 内部调用令牌（所有服务一致；留空时 InternalAuthFilter 放行并记 WARN，内部接口失去保护）
+# 内部调用令牌（所有服务一致；必填，留空时服务启动即失败，不会以放行模式运行）
 CLOUD_INTERNAL_TOKEN=<high-entropy-shared-value>
 # Nacos 鉴权（Docker 里的 Nacos 开启了鉴权）
 # 说明：NACOS_USERNAME / NACOS_PASSWORD 会被所有服务读取，但 .env.example 里目前没有这两项，需要时自行补上
@@ -382,7 +382,9 @@ CloudBack/
 
 Gateway 白名单（方法+路径精确匹配）之外的请求强制携带有效 JWT，解析失败返回 401；命中白名单时先剥离 X-User-Id / X-Username / X-User-Role / X-Internal-Token 再直接放行（不解析 JWT）。支付回调路径（POST /api/payment/notify/alipay、GET /api/payment/return/alipay）在白名单内。
 
-放行或认证通过后，网关注入 `X-Internal-Token`（取 `cloud.internal.token`）；路径段含 `/internal/` 的请求直接返回 403，保证 `/orders/internal/status`、`/products/internal/batch` 这类接口只能由服务间调用。
+放行或认证通过后，网关注入 `X-Internal-Token`（取 `cloud.internal.token`）；路径**段**含 `internal` 的请求直接返回 403（按段比对，`/products/internalized` 不算），保证 `/orders/internal/status`、`/products/internal/batch` 这类接口只能由服务间调用。
+
+库存与卖家批量查询这两个服务间接口的路径里没有 `internal` 段（`POST /products/{id}/stock/deduct`、`POST /products/{id}/stock/restore`、`GET /products/seller`），由网关按路径模式单独返回 403；服务间 Feign 直连服务端口，不经过网关，因此不受影响。
 
 ---
 
@@ -403,7 +405,7 @@ Gateway 白名单（方法+路径精确匹配）之外的请求强制携带有�
 | `OutboxMessage` | 消息发件箱实体，映射 outbox_message 表（status 0=PENDING/1=SENT/2=FAILED/3=SENDING） |
 | `OutboxService` | 消息发件箱：saveMessage() 持久化 + pollPending()/claimMessage() 条件抢占（PENDING→SENDING）+ 超时回收 + 条件更新标记已发送/失败，退避 2^(n+1) 秒，由 cloud-order/cloud-payment 显式声明 Bean |
 | `JwtUtil` | 固定 HS256 签发/解析/验证 JWT，token 有效期 2 小时，claims 含 userId、username、role |
-| `InternalAuthFilter` | Servlet 过滤器：常量时间比对 `X-Internal-Token`，校验失败返回 403；未配置令牌时放行并记一次 WARN；跳过 `/actuator` |
+| `InternalAuthFilter` | Servlet 过滤器：常量时间比对 `X-Internal-Token`，校验失败返回 403；令牌未配置时启动失败（`@PostConstruct` 直接抛异常）；跳过 `/actuator` |
 | `InternalTokenFeignConfig` | Feign 请求拦截器：自动给服务间调用带上 `X-Internal-Token`（已有显式头时不覆盖） |
 | `TokenBlacklistService` | JWT 黑名单：重置密码时按 username 吊销该用户存量 token；Redis 写失败时 fail-open 并告警 |
 | `JwtBlacklistFilter` | 校验请求携带的 JWT 是否在黑名单中，命中则 401 |
@@ -718,11 +720,14 @@ Step 3（执行失败/结果不明）: 补偿
               WHERE id = ? AND sales >= ? AND deleted = 0（不带 status=1，允许对已下架商品回补）
   - 回补幂等由账本保证：重复回补只生效一次；先回补后迟到的扣减会被拒绝（记 RESTORED 墓碑）
   - 回补成功后强制取消可能已落库的待支付订单（cancelOrphanOrder），避免"库存已回滚但订单还在"的孤儿订单超卖
-  - 全部回补成功 → status = FAILED（提示"下单未完成，库存已恢复，可以重新下单"）
+  - 全部回补成功 → status = FAILED，failure_reason 记录真实原因，查询接口原样返回给用户
   - 未完成 → 保持 COMPENSATING，由恢复调度每 30 秒重试
-  - 补偿次数上限 10 次（order_request.compensate_count）：达到上限转 FAILED 并提示联系客服，
-    避免永久失败的补偿无限占用该用户的下单槽位
-  - 明确的失败原因（如库存不足）会透传给用户，而不是笼统提示
+  - 补偿次数上限 10 次（order_request.compensate_count）：达到上限转 FAILED 并写入
+    "库存自动恢复失败，请联系客服或等待人工处理"（failure_reason），避免永久失败的补偿
+    无限占用该用户的下单槽位；此时**不能**提示库存已恢复
+  - 明确的失败原因（如库存不足）会透传给用户，而不是笼统提示；
+    GET /orders/requests/{token} 的 message 优先取 order_request.failure_reason，
+    没有落库原因时使用不承诺库存状态的兜底文案
   - 返回 BusinessException "下单结果正在确认，请查询本次请求状态，勿重新下单"
 
 Step 4: 客户端确认（GET /api/orders/requests/{token}）
@@ -1198,7 +1203,7 @@ SELECT order_no, COUNT(*) FROM payment GROUP BY order_no HAVING COUNT(*) > 1;
 | Meilisearch 连接超时 | 容器未启动或防火墙未放行 | `docker compose up -d meilisearch`，`sudo ufw allow 7700/tcp` |
 | Meilisearch web UI 提示 Authorization header missing | API key 输入后页面未正确携带 | 刷新页面重试，或使用浏览器无痕窗口 |
 | 下游服务报"非法的内部请求"403 | `CLOUD_INTERNAL_TOKEN` 在各服务不一致或未配置 | 所有服务与网关用同一个值，写入 `.env` 后重启 |
-| 日志反复出现"内部认证过滤器处于放行状态" | 未配置 `CLOUD_INTERNAL_TOKEN`，内部接口无保护 | 配置该变量；留空仅用于本地调试 |
+| 服务启动即失败，日志提示"cloud.internal.token 未配置" | `.env` 缺少 `CLOUD_INTERNAL_TOKEN`（yml 已无默认值） | 在 `.env` 补上与其他服务一致的令牌后重启 |
 | 登录提示"失败次数过多，请15分钟后再试" | 连续失败 5 次触发锁定 | 等待 15 分钟，或清理 `cloud:login:fail:{username}` |
 | 下单报"购物车中包含多个卖家的商品" | 一次结算勾选了多个卖家的商品 | 分开下单；当前设计不支持跨卖家混单 |
 | 支付被拒绝且提示订单已取消 | 发起支付前会校验订单状态（fail-closed） | 属预期行为；order 服务不可用时支付会被拦截，稍后重试 |

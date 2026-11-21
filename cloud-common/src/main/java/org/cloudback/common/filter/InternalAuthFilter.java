@@ -1,5 +1,6 @@
 package org.cloudback.common.filter;
 
+import jakarta.annotation.PostConstruct;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -20,7 +21,9 @@ import java.security.MessageDigest;
 
 /**
  * 内部认证过滤器：所有下游服务只信任网关注入的内部 Token。
- * 未配置 cloud.internal.token 时放行并告警（避免未配置环境全挂）。
+ * 未配置 cloud.internal.token 时放行并告警——这是最后一道兜底，正常部署不应触发：
+ * 各服务的 application.yml 已把该配置改为必填（${CLOUD_INTERNAL_TOKEN} 无默认值），
+ * 缺失时服务直接启动失败，不会再带着空令牌运行。
  * 仅在 Servlet 应用中生效，WebFlux 网关不会实例化本过滤器。
  *
  * @author CloudBack
@@ -36,13 +39,25 @@ public class InternalAuthFilter extends OncePerRequestFilter {
 
     private volatile boolean warned = false;
 
+    /**
+     * 令牌为空说明部署漏配。此时若继续放行，任何能直连服务端口的人都能伪造 X-User-Id。
+     * yml 已把该配置设为必填，这里再显式拒绝一次，避免有人把 :默认值 加回来又静默失守。
+     */
+    @PostConstruct
+    void requireConfiguredToken() {
+        if (internalToken == null || internalToken.isBlank()) {
+            throw new IllegalStateException(
+                    "cloud.internal.token 未配置：内部鉴权无法启用，拒绝以放行模式启动。请在 .env 设置 CLOUD_INTERNAL_TOKEN");
+        }
+    }
+
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
                                     FilterChain filterChain) throws ServletException, IOException {
         if (internalToken == null || internalToken.isBlank()) {
             if (!warned) {
                 warned = true;
-                log.warn("cloud.internal.token 未配置，内部认证过滤器处于放行状态，请在 .env 中配置 CLOUD_INTERNAL_TOKEN");
+                log.error("cloud.internal.token 未配置，内部认证过滤器处于放行状态，请在 .env 中配置 CLOUD_INTERNAL_TOKEN");
             }
             filterChain.doFilter(request, response);
             return;

@@ -54,4 +54,5 @@ minio:
 
 cloud:
   internal:
-    token: ${CLOUD_INTERNAL_TOKEN:}
+    # 必填：缺失时启动失败，避免内部鉴权静默 fail-open（各服务与网关必须一致）
+    token: ${CLOUD_INTERNAL_TOKEN}
