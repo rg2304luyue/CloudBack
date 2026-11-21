@@ -13,8 +13,10 @@ import org.cloudback.product.service.CategoryService;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -35,18 +37,27 @@ public class CategoryServiceImpl implements CategoryService {
         List<Category> roots = parentMap.getOrDefault(0L, new ArrayList<>());
 
         for (Category root : roots) {
-            fillChildren(root, parentMap);
+            fillChildren(root, parentMap, new HashSet<>());
         }
         return R.ok(roots);
     }
 
-    /** 递归填充子分类，将扁平列表组装为树形结构 */
-    private void fillChildren(Category parent, Map<Long, List<Category>> parentMap) {
+    /**
+     * 递归填充子分类，将扁平列表组装为树形结构。
+     *
+     * <p>visited 用来兜住历史脏数据：库里若已存在 parent_id 环，没有它就会无限递归直到
+     * StackOverflowError，把公开的分类接口和按分类浏览商品的接口一起打挂。</p>
+     */
+    private void fillChildren(Category parent, Map<Long, List<Category>> parentMap, Set<Long> visited) {
+        if (parent == null || parent.getId() == null || !visited.add(parent.getId())) {
+            log.error("分类树存在环或重复节点，已跳过: categoryId={}", parent == null ? null : parent.getId());
+            return;
+        }
         List<Category> children = parentMap.get(parent.getId());
         if (children != null) {
             parent.setChildren(children);
             for (Category child : children) {
-                fillChildren(child, parentMap);
+                fillChildren(child, parentMap, visited);
             }
         }
     }
@@ -56,6 +67,7 @@ public class CategoryServiceImpl implements CategoryService {
         if (!SystemConstants.ROLE_SELLER.equals(role) && !SystemConstants.ROLE_ADMIN.equals(role)) {
             throw new BusinessException(ResultCode.SELLER_ONLY);
         }
+        validateParent(category.getId(), category.getParentId());
         categoryMapper.insert(category);
         return R.ok("添加分类成功");
     }
@@ -69,8 +81,44 @@ public class CategoryServiceImpl implements CategoryService {
         if (dbCategory == null) {
             throw new BusinessException(ResultCode.NOT_FOUND.getCode(), "分类不存在");
         }
+        validateParent(category.getId(), category.getParentId());
         categoryMapper.updateById(category);
         return R.ok("更新分类成功");
+    }
+
+    /**
+     * 校验 parentId 合法：不能指向自己，也不能指向自己的后代（否则分类树成环）。
+     *
+     * <p>环一旦落库，{@code getCategoryTree} 与 {@code collectDescendantIds} 会递归到
+     * StackOverflowError，公开的分类接口与按分类浏览商品会一并 500，且重启不自愈。</p>
+     */
+    private void validateParent(Long categoryId, Long parentId) {
+        if (parentId == null || parentId == 0L) {
+            return; // 根分类
+        }
+        if (parentId.equals(categoryId)) {
+            throw new BusinessException(ResultCode.PARAM_ERROR.getCode(), "父分类不能是自己");
+        }
+        if (categoryMapper.selectById(parentId) == null) {
+            throw new BusinessException(ResultCode.PARAM_ERROR.getCode(), "父分类不存在");
+        }
+        if (categoryId == null) {
+            return; // 新增分类：只有已存在的父分类需要校验，自身尚无子节点
+        }
+        if (collectDescendantIdsWithoutSelf(categoryId).contains(parentId)) {
+            throw new BusinessException(ResultCode.PARAM_ERROR.getCode(), "父分类不能是自己的子分类");
+        }
+    }
+
+    /** 收集后代 ID（不含自身），带 visited 兜底，避免用脏数据校验时再次栈溢出 */
+    private Set<Long> collectDescendantIdsWithoutSelf(Long categoryId) {
+        Map<Long, List<Category>> parentMap = categoryMapper.selectList(null).stream()
+                .collect(Collectors.groupingBy(c -> c.getParentId() == null ? 0L : c.getParentId()));
+        List<Long> ids = new ArrayList<>();
+        // visited 从空集开始：collectChildren 自己会把起点加入，用来阻断环
+        collectChildren(categoryId, parentMap, ids, new HashSet<>());
+        ids.remove(categoryId);
+        return new HashSet<>(ids);
     }
 
     @Override
@@ -99,16 +147,19 @@ public class CategoryServiceImpl implements CategoryService {
                         c -> c.getParentId() == null ? 0L : c.getParentId()));
         List<Long> ids = new ArrayList<>();
         ids.add(parentId);
-        collectChildren(parentId, parentMap, ids);
+        collectChildren(parentId, parentMap, ids, new HashSet<>());
         return ids;
     }
 
-    private void collectChildren(Long parentId, Map<Long, List<Category>> parentMap, List<Long> ids) {
+    private void collectChildren(Long parentId, Map<Long, List<Category>> parentMap, List<Long> ids, Set<Long> visited) {
+        if (parentId == null || !visited.add(parentId)) {
+            return;
+        }
         List<Category> children = parentMap.get(parentId);
         if (children != null) {
             for (Category child : children) {
                 ids.add(child.getId());
-                collectChildren(child.getId(), parentMap, ids);
+                collectChildren(child.getId(), parentMap, ids, visited);
             }
         }
     }

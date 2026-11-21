@@ -52,9 +52,11 @@ public class ProductServiceImpl implements ProductService {
 
     @Override
     public R<Product> getProductDetail(Long productId) {
-        if (!bloomFilter.mightContain(productId)) {
-            throw new BusinessException(ResultCode.PRODUCT_NOT_EXIST);
-        }
+        // 布隆过滤器只用于挡“确定不存在”的请求，不能作为唯一的判定依据：
+        // Redis 数据丢失后过滤器会被重建为空，此时 contains 恒为 false，
+        // 若仍据此直接 404，全站商品会一起消失且没有自愈路径。
+        // 因此这里照常走两级缓存回源，仅在“过滤器说没有、实际取到了”时回填。
+        boolean bloomSaidAbsent = !bloomFilter.mightContain(productId);
 
         String key = SystemConstants.REDIS_KEY_PREFIX + "product:detail:" + productId;
         // dbLoader 返回 null（不存在/已删除/未上架），由 TwoLevelCacheService 缓存空哨兵防穿透
@@ -65,6 +67,11 @@ public class ProductServiceImpl implements ProductService {
 
         if (product == null) {
             throw new BusinessException(ResultCode.PRODUCT_NOT_EXIST);
+        }
+
+        if (bloomSaidAbsent) {
+            // 过滤器漏判：回填后下次即可正常短路（addProductId 幂等，异常只记日志）
+            bloomFilter.addProductId(productId);
         }
 
         try {
